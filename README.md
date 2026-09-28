@@ -36,6 +36,8 @@ Release assets ending in `-unsigned.dmg` or `-signed.dmg` are CI/development tru
 
 ### Homebrew install (macOS, no separate Python)
 
+The current official ChatGPT macOS app requires **macOS 14 or newer**; the Homebrew formula enforces the same minimum.
+
 Install the standalone Plura runtime from the public tap:
 
 ```sh
@@ -251,6 +253,7 @@ The exact real-app release gate is documented in [docs/PLATFORM_VERIFICATION.md]
 ## Requirements
 
 - The official ChatGPT desktop application for the current OS
+- On macOS, the current official ChatGPT app requires macOS 14 or newer and supports both Apple Silicon and Intel; the Homebrew formula mirrors that minimum.
 - Python 3.10+ for the wheel/source-package CLI path; the guided macOS DMG uses its bundled standalone runtime.
 - Git only when installing/updating directly from a source checkout.
 - macOS uses the canonical `/Applications/ChatGPT.app/Contents/MacOS/ChatGPT` executable by default.

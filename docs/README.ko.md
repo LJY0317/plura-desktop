@@ -27,6 +27,8 @@ installer는 현재 Mac에 맞는 `arm64`/`x86_64` standalone Plura runtime을 �
 
 ### Homebrew 설치 (macOS, 별도 Python 불필요)
 
+현재 공식 ChatGPT macOS 앱의 최소 요구사항은 **macOS 14 이상**이며, Homebrew formula도 같은 최소 버전을 강제합니다.
+
 공개 tap에서 standalone Plura runtime을 설치합니다.
 
 ```sh
@@ -211,6 +213,15 @@ Linux는 XDG 환경 변수가 없으면 `~/.local/share`, `~/.config`, `~/.local
 Apple Silicon macOS에서는 현재 공식 ChatGPT 앱으로 실제 E2E를 검증했습니다. `/Applications/ChatGPT.app` 원본은 항상 read-only이며, managed profile용 runtime clone은 launcher metadata 아래의 재생성 가능한 derived code입니다. Intel macOS standalone은 native Intel GitHub runner에서 build/smoke까지 통과했지만 Intel 공식 앱 E2E는 아직 별도 gate입니다. Windows/Linux는 CI에서 fake executable을 사용해 공통 lifecycle, selector, 경로/환경 contract를 검증합니다. Linux의 공식 preview가 문서화한 `chatgpt` PATH 명령 탐색도 CI contract에 포함하지만, **공식 앱 실기기 실행은 아직 이 저장소에서 검증하지 않았습니다.** 확인되지 않은 동작을 fallback으로 추측하지 않습니다.
 
 Windows/Linux를 실제 지원으로 표시하기 위한 정확한 실기기 gate는 [PLATFORM_VERIFICATION.md](PLATFORM_VERIFICATION.md)에 고정합니다.
+
+## 요구 사항
+
+- 현재 OS용 공식 ChatGPT Desktop 애플리케이션
+- macOS에서는 현재 공식 ChatGPT 앱이 macOS 14 이상을 요구하며 Apple Silicon과 Intel을 지원합니다. Homebrew formula도 같은 최소 버전을 적용합니다.
+- wheel/source-package CLI 경로에서는 Python 3.10 이상. macOS guided DMG는 bundled standalone runtime을 사용합니다.
+- source checkout에서 직접 설치/업데이트할 때만 Git이 필요합니다.
+- macOS 기본 실행 파일은 `/Applications/ChatGPT.app/Contents/MacOS/ChatGPT`입니다.
+- Windows/Linux는 `ChatGPT` 실행 파일을 자동 탐색하고, 실패하면 `--app PATH` 또는 `CHATGPT_EXECUTABLE`을 사용합니다.
 
 ## CLI
 
