@@ -1,0 +1,54 @@
+name: Feature request
+description: Propose a change that fits Plura Desktop's profile/runtime ownership boundary.
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Plura Desktop keeps the official ChatGPT application immutable and treats downstream mobile/menu/bridge products as separate consumers of its public target/session contracts.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the user problem rather than a private implementation detail from ChatGPT/Codex.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain the desired public behavior and lifecycle/ownership expectations.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Shared core / public contract
+        - macOS integration
+        - Windows integration
+        - Linux integration
+        - Packaging / release
+        - Diagnostics
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Safety, privacy, or performance constraints
+      description: Note effects on profile isolation, official-app immutability, destructive ownership, idle CPU/battery/I/O, or diagnostic privacy.
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: This request contains no credentials, cookies, conversation content, profile databases, or other private user data.
+          required: true

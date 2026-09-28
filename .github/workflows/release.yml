@@ -1,0 +1,394 @@
+name: Release package
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  PLURA_RELEASE_TAG: ${{ github.ref_name }}
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Refuse mutable/reused release publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          test "$GITHUB_EVENT_NAME" = "push"
+          test "$GITHUB_REF_TYPE" = "tag"
+          case "$PLURA_RELEASE_TAG" in
+            v*) ;;
+            *) echo "Release ref must be a v* tag" >&2; exit 1 ;;
+          esac
+          if gh release view "$PLURA_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $PLURA_RELEASE_TAG already exists; published releases are immutable." >&2
+            echo "Create a new version/tag instead of rebuilding or replacing existing release assets." >&2
+            exit 1
+          fi
+
+  validate:
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, windows-2025]
+        python-version: ["3.10", "3.12", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.PLURA_RELEASE_TAG }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run safety tests
+        run: python -m unittest discover -s tests -v
+      - name: Check shell syntax
+        if: runner.os != 'Windows'
+        run: for script in scripts/*.sh; do sh -n "$script"; done
+      - name: Check PowerShell syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '[void][scriptblock]::Create((Get-Content -Raw scripts/plura-desktop.ps1))'
+      - name: Compile Python sources
+        run: python -m compileall -q src scripts tests
+      - name: Install packaged CLI
+        run: python -m pip install --no-deps .
+      - name: Smoke packaged CLI
+        run: |
+          plura-desktop --version
+          plura-desktop-diagnose --help
+      - name: Check repository invariants
+        run: python scripts/check_repository_invariants.py
+
+  python-compat:
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.PLURA_RELEASE_TAG }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run safety tests
+        run: python -m unittest discover -s tests -v
+      - name: Compile Python sources
+        run: python -m compileall -q src scripts tests
+      - name: Install packaged CLI
+        run: python -m pip install --no-deps .
+      - name: Smoke packaged CLI
+        run: |
+          plura-desktop --version
+          plura-desktop-diagnose --help
+
+  build:
+    needs: [validate, python-compat]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.PLURA_RELEASE_TAG }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          package_version="$(PYTHONPATH=src python -c 'from plura_desktop.version import __version__; print(__version__)')"
+          test "$PLURA_RELEASE_TAG" = "v${package_version}" || {
+            echo "Tag $PLURA_RELEASE_TAG does not match package version v${package_version}" >&2
+            exit 1
+          }
+          source_commit="$(git rev-parse HEAD^{commit})"
+          echo "PLURA_VERSION=$package_version" >> "$GITHUB_ENV"
+          echo "PLURA_SOURCE_COMMIT=$source_commit" >> "$GITHUB_ENV"
+      - name: Install build tooling
+        run: python -m pip install --upgrade build
+      - name: Build wheel and source distribution
+        run: python -m build
+      - name: Record release source provenance
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          metadata = {
+              "schemaVersion": 1,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "sourceTag": os.environ["PLURA_RELEASE_TAG"],
+              "sourceCommit": os.environ["PLURA_SOURCE_COMMIT"],
+              "workflowCommit": os.environ["GITHUB_SHA"],
+              "workflowName": os.environ["GITHUB_WORKFLOW"],
+              "workflowRunID": os.environ["GITHUB_RUN_ID"],
+              "workflowRunAttempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "eventName": os.environ["GITHUB_EVENT_NAME"],
+          }
+          Path("dist/RELEASE-METADATA.json").write_text(
+              json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          cat dist/RELEASE-METADATA.json
+      - name: Verify wheel install
+        run: |
+          python -m venv release-smoke
+          release-smoke/bin/python -m pip install --no-deps dist/*.whl
+          release-smoke/bin/plura-desktop --version
+          release-smoke/bin/plura-desktop-diagnose --help
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-base
+          path: dist/
+          if-no-files-found: error
+
+  standalone-macos:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.PLURA_RELEASE_TAG }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install standalone build tooling
+        run: python -m pip install "pyinstaller==6.22.3"
+      - name: Build and smoke standalone runtime
+        shell: bash
+        run: scripts/build-macos-standalone.sh standalone "${{ matrix.arch }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-standalone-${{ matrix.arch }}
+          path: standalone/plura-desktop-macos-${{ matrix.arch }}
+          if-no-files-found: error
+
+  macos-dmg:
+    needs: [build, standalone-macos]
+    runs-on: macos-15
+    env:
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.PLURA_RELEASE_TAG }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-base
+          path: release-base
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: macos-standalone-arm64
+          path: standalone
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: macos-standalone-x86_64
+          path: standalone
+      - name: Resolve release inputs
+        shell: bash
+        run: |
+          version="${PLURA_RELEASE_TAG#v}"
+          wheel="$(find release-base -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          test -f standalone/plura-desktop-macos-arm64
+          test -f standalone/plura-desktop-macos-x86_64
+          echo "PLURA_VERSION=$version" >> "$GITHUB_ENV"
+          echo "PLURA_WHEEL=$wheel" >> "$GITHUB_ENV"
+      - name: Import Developer ID certificate
+        if: env.MACOS_CERTIFICATE_P12 != '' && env.MACOS_SIGNING_IDENTITY != ''
+        shell: bash
+        run: |
+          keychain="$RUNNER_TEMP/plura-signing.keychain-db"
+          cert="$RUNNER_TEMP/plura-signing.p12"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$cert"
+          security create-keychain -p temporary-password "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p temporary-password "$keychain"
+          security import "$cert" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k temporary-password "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          echo "PLURA_CODESIGN_IDENTITY=$MACOS_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+      - name: Sign standalone runtimes when Developer ID is available
+        if: env.PLURA_CODESIGN_IDENTITY != ''
+        shell: bash
+        run: |
+          for runtime in standalone/plura-desktop-macos-arm64 standalone/plura-desktop-macos-x86_64; do
+            codesign --force --options runtime --timestamp --sign "$PLURA_CODESIGN_IDENTITY" "$runtime"
+            codesign --verify --strict --verbose=2 "$runtime"
+          done
+      - name: Render checksum-bound macOS installer
+        shell: bash
+        run: |
+          mkdir -p macos-assets
+          wheel_name="$(basename "$PLURA_WHEEL")"
+          wheel_sha="$(shasum -a 256 "$PLURA_WHEEL" | awk '{print $1}')"
+          arm_name="plura-desktop-macos-arm64"
+          intel_name="plura-desktop-macos-x86_64"
+          arm_sha="$(shasum -a 256 "standalone/$arm_name" | awk '{print $1}')"
+          intel_sha="$(shasum -a 256 "standalone/$intel_name" | awk '{print $1}')"
+          python3 scripts/render-macos-release-installer.py \
+            --template scripts/install-plura-desktop-macos.sh \
+            --output macos-assets/install-plura-desktop-macos.sh \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$PLURA_RELEASE_TAG" \
+            --version "$PLURA_VERSION" \
+            --wheel "$wheel_name" \
+            --sha256 "$wheel_sha" \
+            --standalone-arm64 "$arm_name" \
+            --standalone-arm64-sha256 "$arm_sha" \
+            --standalone-x86-64 "$intel_name" \
+            --standalone-x86-64-sha256 "$intel_sha"
+          sh -n macos-assets/install-plura-desktop-macos.sh
+          cp standalone/plura-desktop-macos-arm64 macos-assets/
+          cp standalone/plura-desktop-macos-x86_64 macos-assets/
+      - name: Build macOS installer DMG
+        shell: bash
+        run: |
+          suffix="unsigned"
+          if [ -n "${PLURA_CODESIGN_IDENTITY:-}" ]; then suffix="signed"; fi
+          dmg="Plura-Desktop-${PLURA_VERSION}-macOS-${suffix}.dmg"
+          scripts/build-macos-release-dmg.sh \
+            "$PLURA_WHEEL" \
+            macos-assets/install-plura-desktop-macos.sh \
+            macos-assets/plura-desktop-macos-arm64 \
+            macos-assets/plura-desktop-macos-x86_64 \
+            "$dmg" \
+            "$PLURA_VERSION"
+          echo "PLURA_DMG=$dmg" >> "$GITHUB_ENV"
+      - name: Notarize and staple signed DMG
+        if: env.PLURA_CODESIGN_IDENTITY != '' && env.APPLE_ID != '' && env.APPLE_TEAM_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != ''
+        shell: bash
+        run: |
+          xcrun notarytool submit "$PLURA_DMG" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+          xcrun stapler staple "$PLURA_DMG"
+          xcrun stapler validate "$PLURA_DMG"
+          notarized="Plura-Desktop-${PLURA_VERSION}-macOS.dmg"
+          mv "$PLURA_DMG" "$notarized"
+          echo "PLURA_DMG=$notarized" >> "$GITHUB_ENV"
+      - name: Stage macOS release assets
+        shell: bash
+        run: cp "$PLURA_DMG" macos-assets/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-assets
+          path: macos-assets/
+          if-no-files-found: error
+
+  publish:
+    needs: [build, macos-dmg]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-base
+          path: release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: macos-assets
+          path: release
+      - name: Generate release checksums
+        working-directory: release
+        shell: bash
+        run: |
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS
+          cat SHA256SUMS
+      - name: Attest final release assets
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-checksums: release/SHA256SUMS
+      - name: Publish GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: release
+        shell: bash
+        run: |
+          official_dmg="$(find . -maxdepth 1 -type f -name 'Plura-Desktop-*-macOS.dmg' \
+            ! -name '*-macOS-signed.dmg' ! -name '*-macOS-unsigned.dmg' -print -quit)"
+          if gh release view "$PLURA_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $PLURA_RELEASE_TAG appeared during this workflow; refusing to overwrite it." >&2
+            exit 1
+          fi
+
+          created_draft=0
+          cleanup_draft() {
+            if [ "$created_draft" -eq 1 ]; then
+              gh release delete "$PLURA_RELEASE_TAG" --yes --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup_draft ERR
+
+          if [ -n "$official_dmg" ]; then
+            gh release create "$PLURA_RELEASE_TAG" \
+              --draft \
+              --generate-notes \
+              --latest \
+              --title "$PLURA_RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$PLURA_RELEASE_TAG" \
+              --draft \
+              --generate-notes \
+              --prerelease \
+              --title "$PLURA_RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY"
+          fi
+          created_draft=1
+          gh release upload "$PLURA_RELEASE_TAG" ./* --repo "$GITHUB_REPOSITORY"
+          gh release edit "$PLURA_RELEASE_TAG" --draft=false --repo "$GITHUB_REPOSITORY"
+          created_draft=0
+          trap - ERR
+
+  verify-published-release:
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.PLURA_RELEASE_TAG }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Re-verify the published immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/verify-release.py "$PLURA_RELEASE_TAG"

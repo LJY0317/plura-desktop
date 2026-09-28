@@ -1,0 +1,95 @@
+name: Bug report
+description: Report a reproducible Plura Desktop problem without exposing private profile data.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. **Do not attach credentials, cookies, auth files, profile databases, conversation content, complete process environments, or unredacted private paths.** Use only sanitized structural diagnostics.
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS — Apple Silicon
+        - macOS — Intel
+        - Windows
+        - Linux
+        - Other / unknown
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: "Example: macOS 26.0"
+    validations:
+      required: true
+
+  - type: input
+    id: chatgpt-version
+    attributes:
+      label: Official ChatGPT Desktop version and install source
+      description: Do not upload the application or any account/profile files.
+      placeholder: "Example: version/build shown by the official app, installed from OpenAI"
+    validations:
+      required: true
+
+  - type: input
+    id: plura-version
+    attributes:
+      label: Plura Desktop version or commit
+      placeholder: "Example: 0.1.0 or a Git commit SHA"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Use a disposable managed profile when possible. Do not paste private profile contents.
+      placeholder: |
+        1. Run ...
+        2. Open ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Prefer Plura's bounded diagnostics/status output. Redact usernames and private paths; never include secrets, cookies, conversations, auth/profile databases, prompts, responses, or tool arguments/results.
+      render: text
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I checked that this report contains no credentials, cookies, auth material, conversation content, profile databases, or other private user data.
+          required: true
+
+  - type: checkboxes
+    id: official-app
+    attributes:
+      label: Official app boundary
+      options:
+        - label: I did not patch, re-sign, replace, or manually modify the official ChatGPT application as part of this reproduction.
+          required: true

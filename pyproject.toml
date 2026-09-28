@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plura-desktop"
+dynamic = ["version"]
+description = "A multi-profile runtime for ChatGPT Desktop"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  {name = "Plura Desktop contributors"},
+]
+keywords = ["chatgpt", "desktop", "profiles", "runtime"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/LJY0317/plura-desktop"
+Repository = "https://github.com/LJY0317/plura-desktop"
+Issues = "https://github.com/LJY0317/plura-desktop/issues"
+Changelog = "https://github.com/LJY0317/plura-desktop/blob/main/CHANGELOG.md"
+Security = "https://github.com/LJY0317/plura-desktop/security/policy"
+
+[project.scripts]
+plura-desktop = "plura_desktop.cli:main"
+plura-desktop-diagnose = "plura_desktop.profile_diagnostics:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "plura_desktop.version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["plura_desktop*"]
+
+[tool.setuptools.package-data]
+plura_desktop = ["_runtime_entrypoint.py"]

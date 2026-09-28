@@ -1,0 +1,145 @@
+name: Publish Python package to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing immutable release tag to publish to PyPI (for example v0.1.4)"
+        required: true
+        type: string
+      publish:
+        description: "Actually publish to PyPI after build/smoke (leave false for a free dry run)"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYPI_SOURCE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Verify immutable tag and package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$PYPI_SOURCE_TAG" in
+            v*) ;;
+            *) echo "PyPI source must be an existing v* release tag" >&2; exit 1 ;;
+          esac
+          package_version="$(PYTHONPATH=src python -c 'from plura_desktop.version import __version__; print(__version__)')"
+          test "$PYPI_SOURCE_TAG" = "v${package_version}" || {
+            echo "Tag $PYPI_SOURCE_TAG does not match package version v${package_version}" >&2
+            exit 1
+          }
+          test "$(git describe --tags --exact-match HEAD)" = "$PYPI_SOURCE_TAG"
+          immutable="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$PYPI_SOURCE_TAG" --jq '.immutable')"
+          draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$PYPI_SOURCE_TAG" --jq '.draft')"
+          test "$immutable" = "true" || { echo "PyPI source release must be immutable" >&2; exit 1; }
+          test "$draft" = "false" || { echo "PyPI source release must be published" >&2; exit 1; }
+          echo "PACKAGE_VERSION=$package_version" >> "$GITHUB_ENV"
+      - name: Download exact immutable GitHub Release distributions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-input dist
+          gh release download "$PYPI_SOURCE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "plura_desktop-$PACKAGE_VERSION-py3-none-any.whl" \
+            --pattern "plura_desktop-$PACKAGE_VERSION.tar.gz" \
+            --pattern SHA256SUMS \
+            --pattern RELEASE-METADATA.json \
+            --dir release-input
+      - name: Verify release checksums, provenance, and source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+          import subprocess
+
+          root = Path("release-input")
+          version = os.environ["PACKAGE_VERSION"]
+          tag = os.environ["PYPI_SOURCE_TAG"]
+          names = [
+              f"plura_desktop-{version}-py3-none-any.whl",
+              f"plura_desktop-{version}.tar.gz",
+          ]
+          expected = {}
+          for line in (root / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+              if not line.strip():
+                  continue
+              digest, name = line.split(None, 1)
+              expected[name.lstrip("*")] = digest
+          for name in names:
+              path = root / name
+              if not path.is_file() or name not in expected:
+                  raise SystemExit(f"missing release distribution/checksum: {name}")
+              actual = hashlib.sha256(path.read_bytes()).hexdigest()
+              if actual != expected[name]:
+                  raise SystemExit(f"SHA-256 mismatch: {name}")
+
+          metadata = json.loads((root / "RELEASE-METADATA.json").read_text(encoding="utf-8"))
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if metadata.get("sourceTag") != tag:
+              raise SystemExit("release metadata sourceTag mismatch")
+          if metadata.get("sourceCommit") != head:
+              raise SystemExit("release metadata sourceCommit mismatch")
+          if metadata.get("repository") != os.environ["GITHUB_REPOSITORY"]:
+              raise SystemExit("release metadata repository mismatch")
+          PY
+          for asset in \
+            "release-input/plura_desktop-$PACKAGE_VERSION-py3-none-any.whl" \
+            "release-input/plura_desktop-$PACKAGE_VERSION.tar.gz"; do
+            gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY"
+            cp "$asset" dist/
+          done
+      - name: Smoke wheel in a clean environment
+        shell: bash
+        run: |
+          python -m venv release-smoke
+          release-smoke/bin/python -m pip install --no-deps dist/*.whl
+          release-smoke/bin/plura-desktop --version
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pypi-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    if: ${{ inputs.publish }}
+    needs: verify
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi
+      url: https://pypi.org/p/plura-desktop
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pypi-distributions
+          path: dist
+      - name: Publish with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist/
