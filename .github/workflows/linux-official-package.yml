@@ -1,0 +1,198 @@
+name: Official Linux package smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/linux-official-package.yml"
+      - "src/plura_desktop/platforms/linux.py"
+      - "tests/test_safety.py"
+  schedule:
+    - cron: "41 5 * * 3"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: official-linux-package
+  cancel-in-progress: false
+
+jobs:
+  package-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CHATGPT_DEB_URL: https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Download official OpenAI Linux package
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/chatgpt.deb" \
+            "$CHATGPT_DEB_URL"
+          echo "package=$(dpkg-deb --field "$RUNNER_TEMP/chatgpt.deb" Package)"
+          echo "version=$(dpkg-deb --field "$RUNNER_TEMP/chatgpt.deb" Version)"
+          echo "architecture=$(dpkg-deb --field "$RUNNER_TEMP/chatgpt.deb" Architecture)"
+          test "$(dpkg-deb --field "$RUNNER_TEMP/chatgpt.deb" Package)" = chatgpt
+          test "$(dpkg-deb --field "$RUNNER_TEMP/chatgpt.deb" Architecture)" = amd64
+
+      - name: Verify Plura discovery against extracted official package
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/chatgpt-root"
+          dpkg-deb --extract "$RUNNER_TEMP/chatgpt.deb" "$root"
+          test -x "$root/usr/lib/chatgpt/ChatGPT"
+          test -x "$root/usr/lib/chatgpt/codex-launcher"
+          test -x "$root/usr/lib/chatgpt/resources/codex"
+          PATH="$root/usr/bin:$PATH" PLURA_OFFICIAL_ROOT="$root" PYTHONPATH=src python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from plura_desktop.platforms.linux import LinuxPlatform
+
+          root = Path(os.environ["PLURA_OFFICIAL_ROOT"]).resolve()
+          platform = LinuxPlatform(home=root / "home")
+          desktop = platform.resolve_executable()
+          codex = platform.resolve_codex_executable(desktop)
+          expected_desktop = (root / "usr/lib/chatgpt/ChatGPT").resolve()
+          expected_codex = (root / "usr/lib/chatgpt/resources/codex").resolve()
+          if desktop != expected_desktop:
+              raise SystemExit(f"unexpected ChatGPT executable: {desktop}")
+          if codex != expected_codex:
+              raise SystemExit(f"unexpected bundled Codex executable: {codex}")
+          print(f"desktop={desktop}")
+          print(f"codex={codex}")
+          PY
+          "$root/usr/lib/chatgpt/resources/codex" --version
+
+      - name: Install official package and test managed lifecycle boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xvfb dbus-x11
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$RUNNER_TEMP/chatgpt.deb"
+          test -x /usr/bin/chatgpt
+          test -x /usr/lib/chatgpt/ChatGPT
+          test -x /usr/lib/chatgpt/resources/codex
+
+          python -m venv "$RUNNER_TEMP/plura-venv"
+          "$RUNNER_TEMP/plura-venv/bin/python" -m pip install --no-deps .
+
+          home="$RUNNER_TEMP/plura-home"
+          mkdir -p "$home" "$home/.local/share" "$home/.config" "$home/.local/state"
+          export HOME="$home"
+          export XDG_DATA_HOME="$home/.local/share"
+          export XDG_CONFIG_HOME="$home/.config"
+          export XDG_STATE_HOME="$home/.local/state"
+          export CHATGPT_EXECUTABLE=/usr/bin/chatgpt
+          plura="$RUNNER_TEMP/plura-venv/bin/plura-desktop"
+
+          "$plura" install --profile 2
+          "$plura" status --profile 2 --json
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = Path(os.environ["XDG_STATE_HOME"]) / "PluraDesktop/profile-2-install-manifest.json"
+          value = json.loads(manifest.read_text(encoding="utf-8"))
+          expected = str(Path("/usr/lib/chatgpt/ChatGPT").resolve())
+          if value.get("app_executable") != expected:
+              raise SystemExit(f"manifest did not record real official executable: {value.get('app_executable')}")
+          PY
+
+          port="$(python - <<'PY'
+          import socket
+          with socket.socket() as sock:
+              sock.bind(("127.0.0.1", 0))
+              print(sock.getsockname()[1])
+          PY
+          )"
+          "$plura" _serve-target \
+            --target local.plura-desktop.profile2 \
+            --listen "ws://127.0.0.1:$port" \
+            >"$RUNNER_TEMP/plura-app-server.log" 2>&1 &
+          app_server_pid=$!
+          cleanup_app_server() {
+            kill "$app_server_pid" >/dev/null 2>&1 || true
+            wait "$app_server_pid" >/dev/null 2>&1 || true
+          }
+          trap cleanup_app_server EXIT
+          python - "$port" <<'PY'
+          import socket
+          import sys
+          import time
+
+          port = int(sys.argv[1])
+          for _ in range(100):
+              try:
+                  with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                      print("official bundled app-server: ready")
+                      raise SystemExit(0)
+              except OSError:
+                  time.sleep(0.1)
+          raise SystemExit("official bundled app-server did not listen")
+          PY
+          cleanup_app_server
+          trap - EXIT
+
+          "$plura" uninstall --profile 2
+          "$plura" uninstall --profile 2 --yes
+
+      - name: Smoke canonical official Desktop launch under Xvfb
+        shell: bash
+        run: |
+          set -euo pipefail
+          home="$RUNNER_TEMP/plura-launch-home"
+          mkdir -p "$home" "$home/.local/share" "$home/.config" "$home/.local/state"
+          export HOME="$home"
+          export XDG_DATA_HOME="$home/.local/share"
+          export XDG_CONFIG_HOME="$home/.config"
+          export XDG_STATE_HOME="$home/.local/state"
+          export CHATGPT_EXECUTABLE=/usr/bin/chatgpt
+          plura="$RUNNER_TEMP/plura-venv/bin/plura-desktop"
+
+          "$plura" install --profile 2
+          Xvfb :99 -screen 0 1280x720x24 >"$RUNNER_TEMP/xvfb.log" 2>&1 &
+          xvfb_pid=$!
+          cleanup() {
+            pkill -f -- "--user-data-dir=$XDG_CONFIG_HOME/Codex-Profile2" >/dev/null 2>&1 || true
+            kill "$xvfb_pid" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          sleep 1
+
+          output="$RUNNER_TEMP/launch-session.json"
+          dbus-run-session -- env \
+            DISPLAY=:99 \
+            HOME="$HOME" \
+            XDG_DATA_HOME="$XDG_DATA_HOME" \
+            XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+            XDG_STATE_HOME="$XDG_STATE_HOME" \
+            CHATGPT_EXECUTABLE="$CHATGPT_EXECUTABLE" \
+            "$plura" launch-target \
+              --target local.plura-desktop.profile2 \
+              --renderer-cdp \
+              --json >"$output"
+          cat "$output"
+          python - "$output" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if value.get("state") != "ready":
+              raise SystemExit(f"canonical session not ready: {value}")
+          if value.get("rendererCDPState") != "ready":
+              raise SystemExit(f"renderer CDP not ready: {value}")
+          PY
+          cleanup
+          trap - EXIT
