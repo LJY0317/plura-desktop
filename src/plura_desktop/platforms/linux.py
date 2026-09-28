@@ -13,6 +13,16 @@ from .base import DesktopPlatform, STABLE_FROZEN_RUNTIME_ENV
 class LinuxPlatform(DesktopPlatform):
     platform_id = "linux"
 
+    _SESSION_ENV_KEYS = (
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XAUTHORITY",
+        "XDG_SESSION_TYPE",
+        "XDG_CURRENT_DESKTOP",
+    )
+
     def _xdg(self, name: str, fallback: str) -> Path:
         value = os.environ.get(name)
         return Path(value).expanduser() if value else self.home / fallback
@@ -46,6 +56,18 @@ class LinuxPlatform(DesktopPlatform):
             self._xdg("XDG_STATE_HOME", ".local/state"),
         )
 
+    @staticmethod
+    def _official_package_root(executable: Path) -> Path | None:
+        resolved = executable.resolve()
+        root = resolved.parent
+        if (
+            root.name == "chatgpt"
+            and (root / "ChatGPT").is_file()
+            and (root / "codex-launcher").is_file()
+        ):
+            return root
+        return None
+
     def resolve_executable(self, recorded: str | None = None) -> Path:
         candidates = [
             self.app_override,
@@ -58,10 +80,46 @@ class LinuxPlatform(DesktopPlatform):
                 candidates.append(Path(found))
         for candidate in candidates:
             if candidate and candidate.is_file() and os.access(candidate, os.X_OK):
-                return candidate.resolve()
+                resolved = candidate.resolve()
+                package_root = self._official_package_root(resolved)
+                if package_root is not None and resolved.name == "codex-launcher":
+                    desktop = package_root / "ChatGPT"
+                    if os.access(desktop, os.X_OK):
+                        return desktop.resolve()
+                    raise RuntimeError("Official ChatGPT executable is not executable")
+                return resolved
         raise RuntimeError(
             "ChatGPT executable not found. Pass --app PATH or set CHATGPT_EXECUTABLE."
         )
+
+    def resolve_codex_executable(self, chatgpt_executable: Path) -> Path:
+        # The official Linux package exposes /usr/bin/chatgpt as a symlink to
+        # /usr/lib/chatgpt/codex-launcher, while the bundled Codex executable lives at
+        # /usr/lib/chatgpt/resources/codex. Resolve relative to the real launcher so Plura
+        # stays coupled to the same official package instead of silently picking up an
+        # unrelated `codex` from PATH.
+        if os.environ.get("CODEX_EXECUTABLE"):
+            return super().resolve_codex_executable(chatgpt_executable)
+
+        resolved = chatgpt_executable.resolve()
+        package_root = self._official_package_root(resolved)
+        if package_root is None:
+            return super().resolve_codex_executable(chatgpt_executable)
+        bundled = package_root / "resources" / "codex"
+        if bundled.is_file() and os.access(bundled, os.X_OK):
+            return bundled.resolve()
+        raise RuntimeError("Bundled Codex executable is missing or not executable")
+
+    def sanitized_environment(self, layout: ProfileLayout) -> dict[str, str]:
+        env = super().sanitized_environment(layout)
+        # Linux desktop applications need the active X11/Wayland and D-Bus session boundary.
+        # Preserve only the narrow session variables required to join that GUI session rather
+        # than inheriting the caller's entire environment.
+        for key in self._SESSION_ENV_KEYS:
+            value = os.environ.get(key)
+            if value:
+                env[key] = value
+        return env
 
     def write_selector(
         self,
@@ -78,11 +136,10 @@ class LinuxPlatform(DesktopPlatform):
             command_values = (
                 sys.executable,
                 str(runtime / "plura_desktop_cli.py"),
-                "launch",
-                "--profile",
-                str(layout.index),
-                "--app",
-                str(executable),
+                "launch-target",
+                "--target",
+                layout.identifier,
+                "--renderer-cdp",
             )
         else:
             if not runtime_executable.is_file():
@@ -90,11 +147,10 @@ class LinuxPlatform(DesktopPlatform):
             self.reset_runtime(runtime)
             command_values = (
                 str(runtime_executable),
-                "launch",
-                "--profile",
-                str(layout.index),
-                "--app",
-                str(executable),
+                "launch-target",
+                "--target",
+                layout.identifier,
+                "--renderer-cdp",
             )
         layout.selector.parent.mkdir(parents=True, exist_ok=True)
         command = " ".join(

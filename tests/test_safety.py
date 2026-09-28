@@ -1007,6 +1007,60 @@ class PlatformContractTests(unittest.TestCase):
         ):
             self.assertEqual(platform.resolve_executable(), executable.resolve())
 
+    def test_linux_resolves_codex_from_official_package_layout(self):
+        package_root = self.home / "usr/lib/chatgpt"
+        package_root.mkdir(parents=True)
+        launcher = package_root / "codex-launcher"
+        desktop = package_root / "ChatGPT"
+        codex = package_root / "resources/codex"
+        codex.parent.mkdir(parents=True)
+        for path in (launcher, desktop, codex):
+            path.write_bytes(b"fixture")
+            if os.name != "nt":
+                path.chmod(0o755)
+        platform = LinuxPlatform(home=self.home, app_override=launcher)
+        self.assertEqual(platform.resolve_executable(), desktop.resolve())
+        self.assertEqual(platform.resolve_codex_executable(launcher), codex.resolve())
+
+    def test_linux_official_package_layout_fails_closed_without_bundled_codex(self):
+        package_root = self.home / "usr/lib/chatgpt"
+        package_root.mkdir(parents=True)
+        launcher = package_root / "codex-launcher"
+        desktop = package_root / "ChatGPT"
+        for path in (launcher, desktop):
+            path.write_bytes(b"fixture")
+            if os.name != "nt":
+                path.chmod(0o755)
+        platform = LinuxPlatform(home=self.home, app_override=launcher)
+        with self.assertRaisesRegex(RuntimeError, "Bundled Codex executable"):
+            platform.resolve_codex_executable(launcher)
+
+    def test_linux_preserves_only_required_desktop_session_environment(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DISPLAY": ":88",
+                "WAYLAND_DISPLAY": "wayland-7",
+                "XDG_RUNTIME_DIR": "/run/user/1234",
+                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1234/bus",
+                "XAUTHORITY": "/tmp/xauth",
+                "XDG_SESSION_TYPE": "wayland",
+                "XDG_CURRENT_DESKTOP": "GNOME",
+                "PLURA_UNRELATED_SECRET": "do-not-copy",
+            },
+            clear=False,
+        ):
+            platform = LinuxPlatform(home=self.home, app_override=self.app)
+            env = platform.sanitized_environment(platform.layout(2))
+        self.assertEqual(env["DISPLAY"], ":88")
+        self.assertEqual(env["WAYLAND_DISPLAY"], "wayland-7")
+        self.assertEqual(env["XDG_RUNTIME_DIR"], "/run/user/1234")
+        self.assertEqual(env["DBUS_SESSION_BUS_ADDRESS"], "unix:path=/run/user/1234/bus")
+        self.assertEqual(env["XAUTHORITY"], "/tmp/xauth")
+        self.assertEqual(env["XDG_SESSION_TYPE"], "wayland")
+        self.assertEqual(env["XDG_CURRENT_DESKTOP"], "GNOME")
+        self.assertNotIn("PLURA_UNRELATED_SECRET", env)
+
     def test_linux_refuses_macos_only_tool_lifecycle_diagnostics(self):
         with patch.dict(
             os.environ,
@@ -1072,6 +1126,10 @@ class PlatformContractTests(unittest.TestCase):
         text = launcher.read_text(encoding="utf-8")
         self.assertIn(STABLE_FROZEN_RUNTIME_ENV, text)
         self.assertIn(str(standalone), text)
+        self.assertIn("launch-target", text)
+        self.assertIn("--target local.plura-desktop.profile2", text)
+        self.assertIn("--renderer-cdp", text)
+        self.assertNotIn(" launch --profile ", text)
 
     def test_windows_standalone_helpers_preserve_stable_runtime_environment(self):
         standalone = self.home / "opt/plura-desktop/plura-desktop.exe"
@@ -1370,6 +1428,10 @@ class PlatformContractTests(unittest.TestCase):
             self.assertIn("[Desktop Entry]", selector)
             runtime = next(entry.path for entry in profile.layout.managed if entry.role == "runtime")
             self.assertTrue((runtime / "launch-profile").is_file())
+            launcher = (runtime / "launch-profile").read_text(encoding="utf-8")
+            self.assertIn("launch-target", launcher)
+            self.assertIn("--target local.plura-desktop.profile2", launcher)
+            self.assertIn("--renderer-cdp", launcher)
             self.assertTrue((profile.meta / "plura-desktop").is_file())
             self.assertEqual(profile.load()["platform"], "linux")
             profile.uninstall(True)
