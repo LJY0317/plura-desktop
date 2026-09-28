@@ -91,7 +91,7 @@ gh attestation verify plura_desktop-VERSION-py3-none-any.whl --repo LJY0317/plur
 
 This provenance check is free and independent of Apple Developer signing; it does not make an unsigned macOS DMG equivalent to a notarized consumer DMG.
 
-Starting with `v0.1.5`, new GitHub Releases are also repository-native **immutable releases**: after publication GitHub locks the release assets and associated tag. Each release also includes `RELEASE-METADATA.json`, which records the immutable source tag/commit and workflow run that produced that fixed asset set. See [docs/VERIFY_RELEASE.md](docs/VERIFY_RELEASE.md) for the complete checksum + immutable-release + workflow-attestation verification procedure.
+Current public releases, beginning with the fresh repository line at `v0.1.13`, use GitHub's repository-native **immutable releases**: after publication GitHub locks the release assets and associated tag. Each release also includes `RELEASE-METADATA.json`, which records the immutable source tag/commit and workflow run that produced that fixed asset set. See [docs/VERIFY_RELEASE.md](docs/VERIFY_RELEASE.md) for the complete checksum + immutable-release + workflow-attestation verification procedure.
 
 From a source checkout, current immutable releases can also be verified end to end with `python3 scripts/verify-release.py vVERSION`; the manual commands remain documented independently.
 
@@ -180,7 +180,6 @@ brew uninstall plura-desktop
 
 - **A standalone release runtime is missing or fails checksum verification** — the release asset set is incomplete or damaged. Do not bypass the check; use an intact release or the wheel/CLI fallback.
 - **Only `-unsigned.dmg` or `-signed.dmg` exists, or there is no GitHub Release yet** — use the source/package path above or wait for a notarized un-suffixed DMG. Do not bypass macOS security prompts as the normal install path.
-- **An Update tool created by the old `v0.1.0`/`v0.1.1` prerelease does not find an update** — those early prerelease helpers used GitHub's normal `/releases/latest` endpoint, which excludes prereleases. Manually install/refresh once from `v0.1.2` or newer; generated Update tools from `v0.1.2+` resolve the newest published release including prereleases during the free unsigned-release phase.
 - **`plura-desktop: command not found`** — run it from the isolated environment/package tool where you installed Plura Desktop, or fix that tool's normal PATH setup. In an activated venv, `python -m plura_desktop --version` is an equivalent fallback. Do not copy the console script by itself.
 - **`ChatGPT executable not found` on Windows/Linux** — pass the real executable with `--app PATH` or set `CHATGPT_EXECUTABLE`. Plura Desktop does not guess unknown install layouts.
 - **`restart-required`** — the target is already running outside the requested canonical capability/session. Quit that ChatGPT window normally once, then launch it again through Plura Desktop.

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing immutable release tag to publish to PyPI (for example v0.1.4)"
+        description: "Existing immutable release tag to publish to PyPI (for example v0.1.13)"
         required: true
         type: string
       publish:

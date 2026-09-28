@@ -2,6 +2,8 @@
 
 The public release pipeline is tag-driven and fail-closed. `src/plura_desktop/version.py` is the single product-version source and a release tag must be exactly `v<version>`.
 
+The repository was recreated from a fresh public source snapshot on 2026-09-28. GitHub immutable releases permanently reserve tag names that were previously attached to immutable releases, even after those releases or the former repository are deleted. Consequently, the historical `v0.1.0` through `v0.1.12` tag names must never be reused; the fresh public lineage resumes release publication at `v0.1.13` and later.
+
 ## Release gate
 
 Before a GitHub Release is created, the tag workflow runs the full test/package/invariant suite on macOS, Windows, and Linux with Python 3.10 and 3.12. The build job creates and verifies the wheel/source distribution. Separate Apple Silicon and Intel jobs then build one-file standalone Plura runtimes for `arm64` and `x86_64`.

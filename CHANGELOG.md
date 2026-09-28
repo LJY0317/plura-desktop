@@ -4,6 +4,10 @@ All notable public changes to Plura Desktop will be documented here from the fir
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-09-28
+
+- Continue the fresh public repository's release line at `v0.1.13`. GitHub immutable releases permanently reserve release tag names even after a release/repository is deleted, so the previously used `v0.1.0` through `v0.1.12` names are intentionally not reused. Runtime/source behavior is otherwise the same as the fresh public root snapshot.
+
 ## [0.1.12] - 2026-09-28
 
 - Cover every currently published Python 3.10–3.14 minor in CI/release validation without multiplying the full three-OS matrix: 3.10/3.12/3.14 continue to exercise macOS, Ubuntu, and Windows boundaries, while 3.11/3.13 run the full safety/package smoke suite on Ubuntu. Add the missing Python 3.13 package classifier to match the verified compatibility range.

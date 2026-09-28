@@ -18,7 +18,7 @@ The individual steps below remain documented so the helper itself is not a separ
 
 ## 1. Verify the immutable GitHub Release
 
-For releases created after repository-native immutable releases were enabled (`v0.1.5` and newer), GitHub locks the published assets and associated tag after publication.
+Current public releases, beginning with the fresh repository line at `v0.1.13`, are repository-native immutable releases. GitHub locks the published assets and associated tag after publication.
 
 With GitHub CLI:
 
@@ -28,7 +28,7 @@ gh release verify vVERSION --repo LJY0317/plura-desktop
 
 A successful result verifies GitHub's release attestation, including the release tag, commit, and published asset digests.
 
-Releases older than `v0.1.5` predate repository-native release immutability. They remain historical releases and are not rewritten, but they do not have the same server-side tag/asset lock.
+The pre-reset `v0.1.0` through `v0.1.12` names are retired historical identifiers and are not reused. GitHub immutable-release tag tombstones prevent reusing names that were previously published, even after the former release/repository is removed.
 
 ## 2. Download the exact release assets
 

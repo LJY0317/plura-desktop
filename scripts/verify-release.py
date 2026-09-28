@@ -113,7 +113,7 @@ def verify_release(repository: str, tag: str) -> None:
     if shutil.which("gh") is None:
         fail("GitHub CLI (`gh`) is required")
     if not TAG_PATTERN.fullmatch(tag):
-        fail("tag must look like v0.1.10")
+        fail("tag must look like v0.1.13")
 
     immutable = run(
         "gh",
@@ -167,7 +167,7 @@ def verify_release(repository: str, tag: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("tag", help="immutable release tag, for example v0.1.10")
+    parser.add_argument("tag", help="immutable release tag, for example v0.1.13")
     parser.add_argument(
         "--repository",
         default=DEFAULT_REPOSITORY,

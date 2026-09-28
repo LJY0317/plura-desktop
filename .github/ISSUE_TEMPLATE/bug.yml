@@ -41,7 +41,7 @@ body:
     id: plura-version
     attributes:
       label: Plura Desktop version or commit
-      placeholder: "Example: 0.1.0 or a Git commit SHA"
+      placeholder: "Example: 0.1.13 or a Git commit SHA"
     validations:
       required: true
 

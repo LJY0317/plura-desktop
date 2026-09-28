@@ -82,7 +82,7 @@ gh attestation verify plura_desktop-VERSION-py3-none-any.whl --repo LJY0317/plur
 
 이 provenance 검증은 무료이며 Apple Developer 서명과 독립적입니다. 따라서 unsigned macOS DMG를 notarized 일반 사용자용 DMG와 동등하게 만드는 것은 아닙니다.
 
-`v0.1.5`부터 새 GitHub Release는 repository-native **immutable release**이기도 합니다. publish 이후 GitHub가 release asset과 연결 tag를 잠급니다. 각 release의 `RELEASE-METADATA.json`에는 그 고정 asset set을 만든 source tag/commit과 workflow run이 기록됩니다. SHA-256 + immutable-release + workflow attestation 전체 검증 절차는 [VERIFY_RELEASE.md](VERIFY_RELEASE.md)를 참고합니다.
+현재 공개 release는 새 저장소 lineage의 `v0.1.13`부터 GitHub repository-native **immutable release**를 사용합니다. publish 이후 GitHub가 release asset과 연결 tag를 잠급니다. 각 release의 `RELEASE-METADATA.json`에는 그 고정 asset set을 만든 source tag/commit과 workflow run이 기록됩니다. SHA-256 + immutable-release + workflow attestation 전체 검증 절차는 [VERIFY_RELEASE.md](VERIFY_RELEASE.md)를 참고합니다.
 
 source checkout에서는 현재 immutable release를 `python3 scripts/verify-release.py vVERSION` 한 줄로도 전체 검증할 수 있습니다. 이 helper는 GitHub native release verification, 전체 SHA-256, metadata source binding, checksummed asset의 GitHub Actions attestation을 함께 확인하며, 개별 수동 검증 절차는 위 문서에 독립적으로 계속 남겨둡니다.
 
@@ -171,7 +171,6 @@ brew uninstall plura-desktop
 
 - **standalone release runtime이 없거나 checksum이 맞지 않음** — release asset 구성이 불완전하거나 손상된 상태입니다. 검사를 우회하지 말고 정상 release 또는 wheel/CLI fallback을 사용합니다.
 - **`-unsigned.dmg` 또는 `-signed.dmg`만 있거나 아직 GitHub Release가 없음** — 위 source/package 경로를 사용하거나 suffix 없는 notarized DMG를 기다립니다. 일반 설치 경로에서 macOS 보안 경고를 우회하지 않습니다.
-- **옛 `v0.1.0`/`v0.1.1` prerelease에서 생성된 Update 도구가 업데이트를 찾지 못함** — 초기 prerelease helper는 prerelease를 제외하는 GitHub `/releases/latest` endpoint를 사용했습니다. `v0.1.2` 이상을 한 번 수동 install/refresh하면 이후 생성되는 Update 도구는 무료 unsigned-release 단계에서도 prerelease를 포함한 최신 공개 release를 찾습니다.
 - **`plura-desktop: command not found`** — Plura Desktop을 설치한 격리 환경/package tool에서 실행하거나 해당 tool의 일반적인 PATH 설정을 확인합니다. 활성화된 venv라면 `python -m plura_desktop --version`도 같은 fallback입니다. console script만 따로 복사하지 않습니다.
 - **Windows/Linux에서 `ChatGPT executable not found`** — 실제 실행 파일을 `--app PATH`로 넘기거나 `CHATGPT_EXECUTABLE`을 설정합니다. 알 수 없는 설치 layout을 추측하지 않습니다.
 - **`restart-required`** — 요청한 canonical capability/session 밖에서 이미 실행 중입니다. 해당 ChatGPT 창을 한 번 정상 종료한 뒤 Plura Desktop으로 다시 실행합니다.
