@@ -15,12 +15,24 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 RENDERER = ROOT / "scripts/render-macos-release-installer.py"
 TEMPLATE = ROOT / "scripts/install-plura-desktop-macos.sh"
+STANDALONE_BUILDER = ROOT / "scripts/build-macos-standalone.sh"
+DMG_BUILDER = ROOT / "scripts/build-macos-release-dmg.sh"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 PYPI_WORKFLOW = ROOT / ".github/workflows/publish-pypi.yml"
 WORKFLOW_DIR = ROOT / ".github/workflows"
 
 
 class ReleaseDistributionTests(unittest.TestCase):
+    def test_macos_builders_match_current_chatgpt_minimum_os(self):
+        standalone = STANDALONE_BUILDER.read_text(encoding="utf-8")
+        dmg = DMG_BUILDER.read_text(encoding="utf-8")
+        self.assertIn('MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"', standalone)
+        self.assertIn("arm64-apple-macos14.0", dmg)
+        self.assertIn("x86_64-apple-macos14.0", dmg)
+        self.assertIn("<key>LSMinimumSystemVersion</key><string>14.0</string>", dmg)
+        self.assertNotIn("macos12.0", dmg)
+        self.assertNotIn("<string>12.0</string>", dmg)
+
     def test_release_workflow_keeps_non_notarized_dmg_as_prerelease(self):
         source = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("! -name '*-macOS-signed.dmg'", source)

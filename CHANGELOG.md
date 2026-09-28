@@ -4,8 +4,11 @@ All notable public changes to Plura Desktop will be documented here from the fir
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-09-28
+
 - Track the current official Linux desktop preview without broadening support claims: add a regression test for the documented `chatgpt` PATH command that the Linux adapter already discovers, and clarify that full Linux real-app verification is still required before calling the adapter proven.
 - Align the documented/Homebrew macOS minimum with the current official ChatGPT app requirement: macOS 14 or newer, on Apple Silicon or Intel.
+- Align the macOS standalone runtime and universal DMG installer deployment targets with that same macOS 14 minimum instead of producing release binaries that advertise an older unsupported target.
 
 ## [0.1.13] - 2026-09-28
 

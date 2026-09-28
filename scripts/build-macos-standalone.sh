@@ -22,7 +22,7 @@ cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$output_dir"
-export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 
 pyinstaller \
   --noconfirm \

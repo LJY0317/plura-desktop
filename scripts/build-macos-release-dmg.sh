@@ -54,8 +54,8 @@ do {
 }
 EOF
 
-xcrun swiftc -O -target arm64-apple-macos12.0 "$tmp/InstallerMain.swift" -o "$tmp/installer-arm64"
-xcrun swiftc -O -target x86_64-apple-macos12.0 "$tmp/InstallerMain.swift" -o "$tmp/installer-x86_64"
+xcrun swiftc -O -target arm64-apple-macos14.0 "$tmp/InstallerMain.swift" -o "$tmp/installer-arm64"
+xcrun swiftc -O -target x86_64-apple-macos14.0 "$tmp/InstallerMain.swift" -o "$tmp/installer-x86_64"
 lipo -create "$tmp/installer-arm64" "$tmp/installer-x86_64" -output "$app/Contents/MacOS/Install Plura Desktop"
 chmod 755 "$app/Contents/MacOS/Install Plura Desktop"
 
@@ -73,7 +73,7 @@ cat > "$app/Contents/Info.plist" <<EOF
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
   <key>CFBundleVersion</key><string>${version}</string>
-  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
 </dict>
 </plist>
