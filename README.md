@@ -15,7 +15,7 @@ The project now has a shared profile/domain lifecycle with platform adapters for
 
 ## Quick start
 
-**macOS on Apple Silicon is the real-app verified platform today.** The Intel standalone runtime is built and smoke-tested on GitHub's Intel macOS runner, but an Intel official-app E2E is still a separate verification gate. Windows/Linux share the same core and CI coverage but still require their real-app verification gates described below.
+**macOS on Apple Silicon is the real-app verified platform today.** The Intel standalone runtime is built and smoke-tested on GitHub's Intel macOS runner, but an Intel official-app E2E is still a separate verification gate. Windows/Linux share the same core and CI coverage but still require their real-app verification gates described below. OpenAI currently distributes a [Linux desktop preview](https://learn.chatgpt.com/docs/linux/linux-app) and documents launching it as `chatgpt`; Plura Desktop already discovers that command from `PATH`, but this does not substitute for the repository's full Linux real-app verification flow.
 
 When GitHub Releases contains the suffix-free **`Plura-Desktop-VERSION-macOS.dmg`**, that notarized/stapled DMG is the recommended macOS install. Until then, **Homebrew is the simplest supported macOS install path** and does not require a separate Python environment. The source/package path remains available as the portable fallback. Do not treat `-unsigned.dmg` or `-signed.dmg` artifacts as the normal consumer installer.
 
@@ -242,7 +242,7 @@ There is currently no Plura Desktop background cache, telemetry store, or rollin
 - **macOS Apple Silicon:** official-app E2E verified. The official `/Applications/ChatGPT.app` remains read-only. Managed profiles launch from a byte-identical, still-validly-signed APFS copy-on-write runtime clone under the launcher metadata directory; the clone is derived code, not profile state, and is refreshed when the official app changes.
 - **macOS Intel:** the standalone runtime is built and smoke-tested on a native Intel GitHub runner, but the current official ChatGPT app has not completed this repository's full Intel real-app verification flow yet.
 - **Windows:** lifecycle, path layout, selector generation, sanitized environment, and process-ownership adapter are covered by CI. A real official-app launch has not yet been verified on a Windows machine in this repository.
-- **Linux:** lifecycle, XDG layout, selector generation, sanitized environment, and `/proc` process detection are covered by CI. A real official-app launch has not yet been verified on a Linux machine in this repository.
+- **Linux:** lifecycle, XDG layout, selector generation, sanitized environment, documented `chatgpt` command discovery, and `/proc` process detection are covered by CI. OpenAI's official Linux desktop app is currently available in preview, but a full real-app launch/login/profile-isolation/refresh/uninstall flow has not yet been verified on a Linux machine in this repository.
 
 Windows/Linux therefore require evidence from a real machine before platform-specific launch assumptions should be treated as proven. The common core does not add fallback behavior when an executable or process contract is unknown.
 

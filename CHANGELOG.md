@@ -4,6 +4,8 @@ All notable public changes to Plura Desktop will be documented here from the fir
 
 ## [Unreleased]
 
+- Track the current official Linux desktop preview without broadening support claims: add a regression test for the documented `chatgpt` PATH command that the Linux adapter already discovers, and clarify that full Linux real-app verification is still required before calling the adapter proven.
+
 ## [0.1.13] - 2026-09-28
 
 - Continue the fresh public repository's release line at `v0.1.13`. GitHub immutable releases permanently reserve release tag names even after a release/repository is deleted, so the previously used `v0.1.0` through `v0.1.12` names are intentionally not reused. Runtime/source behavior is otherwise the same as the fresh public root snapshot.

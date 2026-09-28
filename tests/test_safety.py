@@ -995,6 +995,18 @@ class PlatformContractTests(unittest.TestCase):
             self.assertEqual(layout.identifier, "local.plura-desktop.profile2")
             self.assertEqual(platform.resolve_executable(), self.app)
 
+    def test_linux_discovers_documented_chatgpt_command_on_path(self):
+        executable = self.home / "bin/chatgpt"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"fixture")
+        executable.chmod(0o755)
+        platform = LinuxPlatform(home=self.home)
+        with patch(
+            "plura_desktop.platforms.linux.shutil.which",
+            side_effect=lambda name: str(executable) if name == "chatgpt" else None,
+        ):
+            self.assertEqual(platform.resolve_executable(), executable.resolve())
+
     def test_linux_refuses_macos_only_tool_lifecycle_diagnostics(self):
         with patch.dict(
             os.environ,
