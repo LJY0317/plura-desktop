@@ -4,6 +4,8 @@ All notable public changes to Plura Desktop will be documented here from the fir
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-09-28
+
 - Align the Linux adapter with OpenAI's current official preview package layout: resolve the documented `chatgpt` launcher to the real packaged `ChatGPT` executable for fingerprinting, resolve the sibling bundled `resources/codex` app-server executable, and fail closed when that official package root is incomplete instead of silently mixing in an unrelated Codex from `PATH`.
 - Preserve only the narrow X11/Wayland/D-Bus desktop-session environment required by the official Linux GUI while keeping unrelated caller environment variables out of managed launches.
 - Add a scheduled/manual/PR official-package smoke workflow that downloads OpenAI's current Ubuntu/Debian `.deb`, verifies Plura discovery against the real package, starts the bundled Codex app-server, exercises isolated install/uninstall, and executes the actual generated selector to a canonical renderer-enabled Desktop session under Xvfb. This remains package/launch smoke rather than the signed-in real-user verification gate.
