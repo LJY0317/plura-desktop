@@ -11,7 +11,7 @@
 
 ## 빠른 시작
 
-**현재 실제 공식 앱 E2E가 검증된 경로는 Apple Silicon macOS**입니다. Intel standalone runtime은 GitHub의 Intel macOS runner에서 native build/smoke까지 검증했지만 Intel 공식 앱 E2E는 별도 gate로 남아 있습니다. Windows/Linux도 공통 core와 CI 검증은 되어 있지만 아래 실기기 release gate가 아직 남아 있습니다. OpenAI는 현재 [Linux 데스크톱 앱 preview](https://learn.chatgpt.com/docs/linux/linux-app)를 배포하고 `chatgpt` 명령 실행을 문서화하고 있으며, Plura Desktop은 PATH의 이 명령을 자동 탐색합니다. 다만 이것은 아래의 전체 Linux real-app E2E를 대신하지 않습니다.
+**현재 로그인까지 포함한 전체 공식 앱 E2E가 검증된 경로는 Apple Silicon macOS**입니다. Intel standalone runtime은 GitHub의 Intel macOS runner에서 native build/smoke까지 검증했지만 Intel 공식 앱 E2E는 별도 gate로 남아 있습니다. Windows는 공통 core/CI 검증만 완료되어 실기기 gate가 남아 있습니다. Linux는 한 단계 더 나아가 CI가 OpenAI의 현재 공식 [데스크톱 preview](https://learn.chatgpt.com/docs/linux/linux-app) `.deb`를 직접 설치하고 실제 packaged Desktop/bundled Codex를 탐색한 뒤 Xvfb에서 generated selector를 canonical renderer-enabled ready session까지 실행합니다. 다만 실제 사용자 로그인 지속성 및 정상 quit/refresh/uninstall 전체 흐름은 별도 real-user gate로 남아 있습니다.
 
 GitHub Releases에 suffix 없는 **`Plura-Desktop-VERSION-macOS.dmg`**가 실제로 있을 때 그 notarized/stapled DMG가 macOS 권장 설치 경로입니다. 그 전까지는 **Homebrew가 가장 간단한 지원 macOS 설치 경로**이며 별도 Python 환경이 필요하지 않습니다. source/package 경로도 portable fallback으로 유지합니다. `-unsigned.dmg`나 `-signed.dmg`를 일반 사용자용 installer로 취급하지 않습니다.
 
@@ -210,7 +210,7 @@ Linux는 XDG 환경 변수가 없으면 `~/.local/share`, `~/.config`, `~/.local
 
 `PluraDesktop` metadata 내부의 역할도 고정합니다. `profile-N-install-manifest.json`은 ownership/provenance state, `control-runtime`은 refresh 가능한 설치 코드, `runtime-sessions`는 live runtime용 임시 claim/descriptor, macOS `runtime-apps/profile-N` 및 Windows/Linux `profile-N-runtime`은 재생성 가능한 derived runtime입니다. 선택적으로 저장하는 진단 증거는 `diagnostics/profile-N/incidents` 아래에만 두며 Profile당 최대 10개, incident당 최대 256 KiB로 제한합니다. macOS 간편 installer를 사용한 경우 `distribution/cli-runtime`과 `bin`은 installer-owned standalone CLI runtime/launcher이며 full uninstall 도구가 managed profile 제거 후 함께 정리합니다. 별도 background cache/telemetry/rolling product log는 만들지 않습니다.
 
-Apple Silicon macOS에서는 현재 공식 ChatGPT 앱으로 실제 E2E를 검증했습니다. `/Applications/ChatGPT.app` 원본은 항상 read-only이며, managed profile용 runtime clone은 launcher metadata 아래의 재생성 가능한 derived code입니다. Intel macOS standalone은 native Intel GitHub runner에서 build/smoke까지 통과했지만 Intel 공식 앱 E2E는 아직 별도 gate입니다. Windows/Linux는 CI에서 fake executable을 사용해 공통 lifecycle, selector, 경로/환경 contract를 검증합니다. Linux의 공식 preview가 문서화한 `chatgpt` PATH 명령 탐색도 CI contract에 포함하지만, **공식 앱 실기기 실행은 아직 이 저장소에서 검증하지 않았습니다.** 확인되지 않은 동작을 fallback으로 추측하지 않습니다.
+Apple Silicon macOS에서는 현재 공식 ChatGPT 앱으로 로그인까지 포함한 실제 E2E를 검증했습니다. `/Applications/ChatGPT.app` 원본은 항상 read-only이며, managed profile용 runtime clone은 launcher metadata 아래의 재생성 가능한 derived code입니다. Intel macOS standalone은 native Intel GitHub runner에서 build/smoke까지 통과했지만 Intel 공식 앱 E2E는 아직 별도 gate입니다. Windows는 CI에서 fake executable로 공통 lifecycle, selector, 경로/환경 contract를 검증합니다. Linux는 이 공통 CI에 더해 OpenAI의 현재 공식 Ubuntu/Debian preview package를 Ubuntu 24.04 runner에 실제 설치하고, `chatgpt` wrapper → 실제 `ChatGPT` executable, bundled `resources/codex`, 좁은 GUI session 환경, isolated Profile 2 설치, generated selector를 통한 renderer-enabled canonical launch까지 검증합니다. **다만 실제 사용자 로그인 유지, default profile과의 독립 사용, product 정상 quit, refresh/uninstall 전체 실사용 흐름은 아직 별도 gate입니다.**
 
 Windows/Linux를 실제 지원으로 표시하기 위한 정확한 실기기 gate는 [PLATFORM_VERIFICATION.md](PLATFORM_VERIFICATION.md)에 고정합니다.
 

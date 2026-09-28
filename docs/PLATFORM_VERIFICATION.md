@@ -4,6 +4,8 @@ This document is the release gate for behavior that fake-executable CI cannot pr
 
 Record the OS/version, ChatGPT Desktop version and installation source, Plura Desktop commit, executable path used, and the final pass/fail result. Do not attach credentials, cookies, profile databases, conversation content, or unredacted private paths to verification evidence.
 
+The repository's scheduled `Official Linux package smoke` workflow is an intermediate gate, not a substitute for this full flow. It downloads OpenAI's documented current Ubuntu/Debian package, verifies the packaged Desktop and bundled Codex executable boundary, installs an isolated managed profile, starts the bundled app-server, and runs the generated selector to a renderer-enabled canonical session under Xvfb. It deliberately does not automate a real user sign-in or claim that CI process cleanup is a supported normal-quit lifecycle.
+
 ## Verification flow
 
 Use a disposable managed Profile 2. Do not copy an existing profile into it.
