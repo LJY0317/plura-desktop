@@ -1126,6 +1126,10 @@ class PlatformContractTests(unittest.TestCase):
         text = launcher.read_text(encoding="utf-8")
         self.assertIn(STABLE_FROZEN_RUNTIME_ENV, text)
         self.assertIn(str(standalone), text)
+        self.assertIn("launch-target", text)
+        self.assertIn("--target local.plura-desktop.profile2", text)
+        self.assertIn("--renderer-cdp", text)
+        self.assertNotIn(" launch --profile ", text)
 
     def test_windows_standalone_helpers_preserve_stable_runtime_environment(self):
         standalone = self.home / "opt/plura-desktop/plura-desktop.exe"
@@ -1424,6 +1428,10 @@ class PlatformContractTests(unittest.TestCase):
             self.assertIn("[Desktop Entry]", selector)
             runtime = next(entry.path for entry in profile.layout.managed if entry.role == "runtime")
             self.assertTrue((runtime / "launch-profile").is_file())
+            launcher = (runtime / "launch-profile").read_text(encoding="utf-8")
+            self.assertIn("launch-target", launcher)
+            self.assertIn("--target local.plura-desktop.profile2", launcher)
+            self.assertIn("--renderer-cdp", launcher)
             self.assertTrue((profile.meta / "plura-desktop").is_file())
             self.assertEqual(profile.load()["platform"], "linux")
             profile.uninstall(True)

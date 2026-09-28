@@ -136,11 +136,10 @@ class LinuxPlatform(DesktopPlatform):
             command_values = (
                 sys.executable,
                 str(runtime / "plura_desktop_cli.py"),
-                "launch",
-                "--profile",
-                str(layout.index),
-                "--app",
-                str(executable),
+                "launch-target",
+                "--target",
+                layout.identifier,
+                "--renderer-cdp",
             )
         else:
             if not runtime_executable.is_file():
@@ -148,11 +147,10 @@ class LinuxPlatform(DesktopPlatform):
             self.reset_runtime(runtime)
             command_values = (
                 str(runtime_executable),
-                "launch",
-                "--profile",
-                str(layout.index),
-                "--app",
-                str(executable),
+                "launch-target",
+                "--target",
+                layout.identifier,
+                "--renderer-cdp",
             )
         layout.selector.parent.mkdir(parents=True, exist_ok=True)
         command = " ".join(
