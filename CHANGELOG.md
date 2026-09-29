@@ -4,6 +4,10 @@ All notable public changes to Plura Desktop will be documented here from the fir
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-09-29
+
+- Make `quit-target` wait through transient `restart-required` state until the exact Desktop target is actually relaunchable. This closes a race where a normal quit completed but an immediate canonical relaunch could still be rejected, leaving the profile closed instead of reopening it.
+
 ## [0.1.15] - 2026-09-28
 
 - Align the Linux adapter with OpenAI's current official preview package layout: resolve the documented `chatgpt` launcher to the real packaged `ChatGPT` executable for fingerprinting, resolve the sibling bundled `resources/codex` app-server executable, and fail closed when that official package root is incomplete instead of silently mixing in an unrelated Codex from `PATH`.

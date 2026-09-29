@@ -750,10 +750,10 @@ def quit_target(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         current = target_session(platform, target_id)
-        if current.get("state") != "ready":
+        if current.get("state") in {"available", "unavailable", "unsupported"}:
             return current
         time.sleep(0.1)
-    raise RuntimeError(f"Target canonical session did not release after desktop quit: {target_id}")
+    raise RuntimeError(f"Target did not become relaunchable after desktop quit: {target_id}")
 
 
 def _private_command(platform: DesktopPlatform, command: str, target_id: str, *extra: str) -> list[str]:

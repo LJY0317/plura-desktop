@@ -756,6 +756,35 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(result, available)
         self.assertEqual(self.platform.quit_requests, [(str(executable), 123)])
 
+    def test_quit_target_waits_through_transient_restart_required_until_relaunchable(self):
+        self.profile.install()
+        executable = self.platform.resolve_executable(self.profile.load()["app_executable"])
+        self.platform.desktop_process_ids[str(executable)] = 123
+        ready = {
+            "contractVersion": 1,
+            "targetID": self.profile.identifier,
+            "state": "ready",
+            "endpoint": "ws://127.0.0.1:18762",
+            "desktopProcessID": 123,
+        }
+        restarting = {
+            "contractVersion": 1,
+            "targetID": self.profile.identifier,
+            "state": "restart-required",
+        }
+        available = {
+            "contractVersion": 1,
+            "targetID": self.profile.identifier,
+            "state": "available",
+        }
+        with patch(
+            "plura_desktop.manager.target_session",
+            side_effect=[ready, restarting, available],
+        ):
+            result = quit_target(self.platform, self.profile.identifier)
+        self.assertEqual(result, available)
+        self.assertEqual(self.platform.quit_requests, [(str(executable), 123)])
+
     def test_quit_target_is_idempotent_when_target_is_not_running(self):
         self.profile.install()
         available = {
