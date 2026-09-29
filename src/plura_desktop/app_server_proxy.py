@@ -10,6 +10,7 @@ import threading
 from typing import Any
 from urllib.parse import urlsplit
 
+from .model_list_overlay import ModelListOverlay, ModelListOverlayError
 from .routing import ResponsesRoute
 
 
@@ -17,6 +18,7 @@ _WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _MAX_HTTP_HEADER_BYTES = 64 * 1024
 _MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 _ROUTED_THREAD_METHODS = frozenset({"thread/start", "thread/resume", "thread/fork"})
+_MODEL_LIST_METHOD = "model/list"
 
 
 class AppServerProxyError(RuntimeError):
@@ -66,6 +68,48 @@ def rewrite_app_server_request(message: str, route: ResponsesRoute) -> str:
     routed_params["modelProvider"] = route.provider_id
     routed = dict(value)
     routed["params"] = routed_params
+    return json.dumps(routed, ensure_ascii=False, separators=(",", ":"))
+
+
+def _rpc_id_key(value: Any) -> str | None:
+    if value is None or isinstance(value, (str, int, float)) and not isinstance(value, bool):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return None
+
+
+def model_list_request_key(message: str) -> str | None:
+    try:
+        value = json.loads(message)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict) or value.get("method") != _MODEL_LIST_METHOD or "id" not in value:
+        return None
+    return _rpc_id_key(value.get("id"))
+
+
+def overlay_model_list_response(
+    message: str,
+    pending_ids: set[str],
+    overlay: ModelListOverlay,
+) -> str:
+    try:
+        value = json.loads(message)
+    except json.JSONDecodeError:
+        return message
+    if not isinstance(value, dict) or "id" not in value:
+        return message
+    key = _rpc_id_key(value.get("id"))
+    if key is None or key not in pending_ids:
+        return message
+    pending_ids.discard(key)
+    if "result" not in value:
+        return message
+    try:
+        augmented = overlay.apply(value["result"])
+    except ModelListOverlayError:
+        return message
+    routed = dict(value)
+    routed["result"] = augmented
     return json.dumps(routed, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -243,12 +287,21 @@ def _connect_upstream(endpoint: str, requested_protocols: str | None) -> tuple[s
 
 
 class RoutePreservingAppServerProxy:
-    """Loopback WebSocket proxy that preserves one launch-time Responses route per thread."""
+    """Loopback WebSocket proxy for launch-time route and optional model-list projection."""
 
-    def __init__(self, listen_url: str, upstream_url: str, route: ResponsesRoute) -> None:
+    def __init__(
+        self,
+        listen_url: str,
+        upstream_url: str,
+        route: ResponsesRoute | None,
+        model_list_overlay: ModelListOverlay | None = None,
+    ) -> None:
+        if route is None and model_list_overlay is None:
+            raise ValueError("App-server proxy requires a Responses route or model-list overlay")
         self.listen_url = listen_url
         self.upstream_url = upstream_url
         self.route = route
+        self.model_list_overlay = model_list_overlay
         self._listener: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -372,17 +425,35 @@ class RoutePreservingAppServerProxy:
             downstream_peer = _WebSocketPeer(client, send_masked=False, expect_masked=True)
             upstream_peer = _WebSocketPeer(upstream, send_masked=True, expect_masked=False)
             done = threading.Event()
+            pending_model_lists: set[str] = set()
+            pending_lock = threading.Lock()
 
-            def pump(source: _WebSocketPeer, destination: _WebSocketPeer, *, rewrite: bool) -> None:
+            def pump(source: _WebSocketPeer, destination: _WebSocketPeer, *, client_to_server: bool) -> None:
                 try:
                     while not done.is_set():
                         message = source.recv_message()
                         if message is None:
                             return
                         opcode, payload = message
-                        if rewrite and opcode == 0x1:
+                        if opcode == 0x1 and client_to_server:
                             text = payload.decode("utf-8")
-                            payload = rewrite_app_server_request(text, self.route).encode("utf-8")
+                            if self.model_list_overlay is not None:
+                                request_key = model_list_request_key(text)
+                                if request_key is not None:
+                                    with pending_lock:
+                                        pending_model_lists.add(request_key)
+                            if self.route is not None:
+                                text = rewrite_app_server_request(text, self.route)
+                            payload = text.encode("utf-8")
+                        elif opcode == 0x1 and not client_to_server and self.model_list_overlay is not None:
+                            text = payload.decode("utf-8")
+                            with pending_lock:
+                                text = overlay_model_list_response(
+                                    text,
+                                    pending_model_lists,
+                                    self.model_list_overlay,
+                                )
+                            payload = text.encode("utf-8")
                         destination.send_frame(opcode, payload)
                 except (EOFError, OSError, UnicodeDecodeError, AppServerProxyError):
                     return
@@ -397,11 +468,11 @@ class RoutePreservingAppServerProxy:
             server_to_client = threading.Thread(
                 target=pump,
                 args=(upstream_peer, downstream_peer),
-                kwargs={"rewrite": False},
+                kwargs={"client_to_server": False},
                 daemon=True,
             )
             server_to_client.start()
-            pump(downstream_peer, upstream_peer, rewrite=True)
+            pump(downstream_peer, upstream_peer, client_to_server=True)
             server_to_client.join(timeout=1.0)
         except (EOFError, OSError, AppServerProxyError):
             return
