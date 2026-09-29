@@ -333,6 +333,11 @@ environment variable. Plura retains the Native result if the callback is unavail
 `modelListOverlayFingerprint`. An already running target with a different overlay must be quit
 normally before relaunch.
 
+A companion that handles both first-party Native requests and its own Web models can also pass
+`--responses-runtime-header-name HEADER` with the Responses route. Plura then keeps the official
+Codex bearer authorization on requests and sends the companion's environment secret in `HEADER`.
+The ordinary `--responses-env-key` bearer route remains the default when this option is absent.
+
 Controllers that need to inspect the official Desktop renderer can opt in to a Chromium DevTools endpoint at launch:
 
 ```sh

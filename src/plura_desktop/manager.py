@@ -877,6 +877,8 @@ def launch_target(
             "--responses-env-key",
             responses_route.env_key,
         ))
+        if responses_route.runtime_header_name is not None:
+            extra.extend(("--responses-runtime-header-name", responses_route.runtime_header_name))
     if model_list_overlay is not None:
         extra.extend((
             "--model-list-overlay-url",

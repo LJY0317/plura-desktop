@@ -955,6 +955,30 @@ class SafetyTests(unittest.TestCase):
         )
         self.assertNotEqual(first.fingerprint, second.fingerprint)
 
+    def test_composite_responses_route_keeps_first_party_auth_and_local_capability_separate(self):
+        legacy = ResponsesRoute.create(
+            "http://127.0.0.1:18741/v1", "LOCAL_TOKEN", "s" * 48,
+        )
+        route = ResponsesRoute.create(
+            "http://127.0.0.1:18741/v1", "LOCAL_TOKEN", "s" * 48,
+            runtime_header_name="X-Local-Runtime-Token",
+        )
+        self.assertNotEqual(route.fingerprint, legacy.fingerprint)
+        provider = route.thread_config_overlay()["model_providers"][route.provider_id]
+        self.assertEqual(provider["env_http_headers"], {"X-Local-Runtime-Token": "LOCAL_TOKEN"})
+        self.assertTrue(provider["requires_openai_auth"])
+        self.assertEqual(provider["model_catalog_url"], "http://127.0.0.1:18741/v1/models")
+        self.assertNotIn("env_key", provider)
+        arguments = " ".join(route.codex_config_args())
+        self.assertIn("requires_openai_auth=true", arguments)
+        self.assertIn('env_http_headers."X-Local-Runtime-Token"="LOCAL_TOKEN"', arguments)
+        self.assertNotIn("s" * 48, arguments)
+        with self.assertRaisesRegex(ValueError, "must not replace"):
+            ResponsesRoute.create(
+                "http://127.0.0.1:18741/v1", "LOCAL_TOKEN", "s" * 48,
+                runtime_header_name="Authorization",
+            )
+
     def test_run_app_server_routes_with_config_overrides_and_never_places_secret_on_argv(self):
         route = ResponsesRoute.create(
             "http://127.0.0.1:18741/v1",

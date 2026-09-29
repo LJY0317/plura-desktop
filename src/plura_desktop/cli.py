@@ -94,6 +94,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--responses-runtime-header-name",
+        help=(
+            "Optional local capability header for a composite Responses provider. "
+            "Keeps first-party Codex authorization separate from the named environment secret."
+        ),
+    )
+    parser.add_argument(
         "--model-list-overlay-url",
         help=(
             "Optional loopback http:// callback that may transform app-server model/list results. "
@@ -133,7 +140,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         responses_route = None
-        if args.responses_base_url is not None or args.responses_env_key is not None:
+        if (args.responses_base_url is not None or args.responses_env_key is not None
+                or args.responses_runtime_header_name is not None):
             if not args.responses_base_url or not args.responses_env_key:
                 raise ValueError("Responses routing requires both --responses-base-url and --responses-env-key")
             credential = os.environ.get(args.responses_env_key)
@@ -145,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.responses_base_url,
                 args.responses_env_key,
                 credential,
+                runtime_header_name=args.responses_runtime_header_name,
             )
         model_list_overlay = None
         if args.model_list_overlay_url is not None or args.model_list_overlay_env_key is not None:
