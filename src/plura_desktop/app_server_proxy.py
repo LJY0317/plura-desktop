@@ -86,17 +86,10 @@ def rewrite_app_server_request(message: str, route: ResponsesRoute) -> str:
     else:
         raise AppServerProxyError("Routed app-server request has non-object config")
 
-    overlay = route.thread_config_overlay()
     existing_providers = config.get("model_providers")
-    if existing_providers is None:
-        providers: dict[str, Any] = {}
-    elif isinstance(existing_providers, dict):
-        providers = dict(existing_providers)
-    else:
+    if existing_providers is not None and not isinstance(existing_providers, dict):
         raise AppServerProxyError("Routed app-server request has non-object model_providers")
-    providers.update(overlay["model_providers"])
-    config["model_provider"] = overlay["model_provider"]
-    config["model_providers"] = providers
+    config.update(route.thread_config_overlay())
 
     routed_params = dict(params)
     routed_params["config"] = config

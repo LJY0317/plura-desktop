@@ -866,20 +866,18 @@ class SafetyTests(unittest.TestCase):
     def test_responses_runtime_header_is_sourced_from_env_without_exposing_secret(self):
         route = ResponsesRoute.create(
             "http://127.0.0.1:18741/v1", "CHATGPT_TELA_RUNTIME_TOKEN", "s" * 48,
-            "X-ChatGPT-Tela-Runtime",
+            "OpenAI-Organization",
         )
-        self.assertEqual(
-            route.thread_config_overlay()["model_providers"][route.provider_id]["env_http_headers"],
-            {"X-ChatGPT-Tela-Runtime": "CHATGPT_TELA_RUNTIME_TOKEN"},
-        )
-        self.assertTrue(route.thread_config_overlay()["model_providers"][route.provider_id]["requires_openai_auth"])
-        self.assertNotIn("env_key", route.thread_config_overlay()["model_providers"][route.provider_id])
-        self.assertIn('env_http_headers."X-ChatGPT-Tela-Runtime"="CHATGPT_TELA_RUNTIME_TOKEN"',
+        self.assertEqual(route.thread_config_overlay(), {
+            "model_provider": "openai",
+            "openai_base_url": "http://127.0.0.1:18741/v1",
+        })
+        self.assertEqual(route.runtime_env_key, "OPENAI_ORGANIZATION")
+        self.assertIn('openai_base_url="http://127.0.0.1:18741/v1"',
                       "\n".join(route.codex_config_args()))
-        self.assertIn("requires_openai_auth=true", "\n".join(route.codex_config_args()))
-        self.assertNotIn("env_key", "\n".join(route.codex_config_args()))
+        self.assertNotIn("model_providers", "\n".join(route.codex_config_args()))
         self.assertNotIn("s" * 48, "\n".join(route.codex_config_args()))
-        with self.assertRaisesRegex(ValueError, "header name"):
+        with self.assertRaisesRegex(ValueError, "runtime header"):
             ResponsesRoute.create("http://127.0.0.1:18741/v1", "CHATGPT_TELA_RUNTIME_TOKEN", "s" * 48,
                                   "Bad Header")
 
@@ -900,11 +898,23 @@ class SafetyTests(unittest.TestCase):
         command = execve.call_args.args[1]
         environment = execve.call_args.args[2]
         rendered = "\n".join(command)
-        self.assertIn('model_provider="external_responses_runtime"', rendered)
-        self.assertIn(f'base_url="{route.base_url}"', rendered)
-        self.assertIn(f'env_key="{route.env_key}"', rendered)
+        self.assertIn('model_provider="openai"', rendered)
+        self.assertIn(f'openai_base_url="{route.base_url}"', rendered)
+        self.assertNotIn("model_providers", rendered)
         self.assertNotIn("super-secret", rendered)
         self.assertEqual(environment[route.env_key], "super-secret")
+        self.assertEqual(environment["OPENAI_ORGANIZATION"], "super-secret")
+
+        with patch.dict(os.environ, {
+            route.env_key: "super-secret",
+            "OPENAI_ORGANIZATION": "existing-organization",
+        }, clear=False):
+            with self.assertRaisesRegex(RuntimeError, "cannot replace an existing OPENAI_ORGANIZATION"):
+                self.platform.run_app_server(
+                    self.home / ".codex",
+                    "ws://127.0.0.1:19001",
+                    responses_route=route,
+                )
 
     def test_supervisor_keeps_routed_backend_private_and_publishes_proxy_endpoint(self):
         self.profile.install()

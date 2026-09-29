@@ -141,6 +141,14 @@ class DesktopPlatform(ABC):
             raise RuntimeError(
                 f"Responses route credential environment variable is missing: {responses_route.env_key}"
             )
+        if responses_route is not None:
+            credential = env[responses_route.env_key]
+            inherited = env.get(responses_route.runtime_env_key)
+            if inherited and inherited != credential:
+                raise RuntimeError(
+                    f"Responses route cannot replace an existing {responses_route.runtime_env_key} value"
+                )
+            env[responses_route.runtime_env_key] = credential
         command = [
             str(codex),
             "-c",

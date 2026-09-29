@@ -100,24 +100,25 @@ class AppServerProxyTests(unittest.TestCase):
                             "threadId": "fixture-thread",
                             "config": {
                                 "service_tier": "default",
-                                "model_provider": "legacy_fixture",
+                                "model_provider": "external_responses_runtime",
                                 "model_providers": {
-                                    "legacy_fixture": {"name": "Legacy"},
+                                    "external_responses_runtime": {"name": "Legacy route"},
                                 },
                             },
-                            "modelProvider": "legacy_fixture",
+                            "modelProvider": "external_responses_runtime",
                         },
                     }
                 )
                 routed = json.loads(rewrite_app_server_request(source, self.route))
                 params = routed["params"]
-                self.assertEqual(params["config"]["model_provider"], "external_responses_runtime")
-                self.assertEqual(params["modelProvider"], "external_responses_runtime")
+                self.assertEqual(params["config"]["model_provider"], "openai")
+                self.assertEqual(params["config"]["openai_base_url"], self.route.base_url)
+                self.assertEqual(params["modelProvider"], "openai")
                 self.assertEqual(params["config"]["service_tier"], "default")
-                self.assertIn("legacy_fixture", params["config"]["model_providers"])
-                provider = params["config"]["model_providers"]["external_responses_runtime"]
-                self.assertEqual(provider["base_url"], self.route.base_url)
-                self.assertEqual(provider["env_key"], self.route.env_key)
+                self.assertEqual(
+                    params["config"]["model_providers"]["external_responses_runtime"],
+                    {"name": "Legacy route"},
+                )
                 self.assertNotIn(self.secret, json.dumps(routed))
 
         unrelated = '{"id":9,"method":"turn/start","params":{"threadId":"t"}}'
@@ -211,7 +212,8 @@ class AppServerProxyTests(unittest.TestCase):
             config = params["config"]
             assert isinstance(config, dict)
             self.assertEqual(config["service_tier"], "default")
-            self.assertEqual(config["model_provider"], "external_responses_runtime")
+            self.assertEqual(config["model_provider"], "openai")
+            self.assertEqual(config["openai_base_url"], self.route.base_url)
             self.assertNotIn(self.secret, json.dumps(routed))
         finally:
             proxy.close()

@@ -9,8 +9,9 @@ from urllib.parse import urlsplit
 
 
 _ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
-_HEADER_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,127}$")
-_PROVIDER_ID = "external_responses_runtime"
+_PROVIDER_ID = "openai"
+_RUNTIME_HEADER = "OpenAI-Organization"
+_RUNTIME_ENV_KEY = "OPENAI_ORGANIZATION"
 
 
 def _toml_string(value: str) -> str:
@@ -25,7 +26,7 @@ class ResponsesRoute:
     base_url: str
     env_key: str
     fingerprint: str
-    runtime_header_name: str | None = None
+    runtime_header_name: str = _RUNTIME_HEADER
 
     @classmethod
     def create(
@@ -44,8 +45,10 @@ class ResponsesRoute:
             raise ValueError("Responses route env key must be an uppercase environment variable name")
         if len(credential) < 32:
             raise ValueError("Responses route credential must contain at least 32 characters")
-        if runtime_header_name is not None and not _HEADER_NAME.fullmatch(runtime_header_name):
-            raise ValueError("Responses route runtime header name is invalid")
+        if runtime_header_name is None:
+            runtime_header_name = _RUNTIME_HEADER
+        if runtime_header_name != _RUNTIME_HEADER:
+            raise ValueError(f"Responses route runtime header must be {_RUNTIME_HEADER}")
         normalized = f"http://{parsed.hostname}:{parsed.port}/v1"
         credential_hash = hashlib.sha256(credential.encode("utf-8")).hexdigest()
         material = json.dumps(
@@ -67,24 +70,10 @@ class ResponsesRoute:
         )
 
     def codex_config_args(self) -> tuple[str, ...]:
-        prefix = f"model_providers.{_PROVIDER_ID}"
         values = (
             f"model_provider={_toml_string(_PROVIDER_ID)}",
-            f"{prefix}.name={_toml_string('External Responses Runtime')}",
-            f"{prefix}.base_url={_toml_string(self.base_url)}",
-            f"{prefix}.wire_api={_toml_string('responses')}",
+            f"openai_base_url={_toml_string(self.base_url)}",
         )
-        if self.runtime_header_name:
-            values += (
-                f"{prefix}.env_http_headers.{_toml_string(self.runtime_header_name)}={_toml_string(self.env_key)}",
-                f"{prefix}.requires_openai_auth=true",
-                f"{prefix}.supports_websockets=false",
-            )
-        else:
-            values += (
-                f"{prefix}.env_key={_toml_string(self.env_key)}",
-                f"{prefix}.requires_openai_auth=false",
-            )
         result: list[str] = []
         for value in values:
             result.extend(("-c", value))
@@ -93,24 +82,11 @@ class ResponsesRoute:
     def thread_config_overlay(self) -> dict[str, Any]:
         """Return the secret-free thread config needed to preserve this route."""
 
-        return {
-            "model_provider": _PROVIDER_ID,
-            "model_providers": {
-                _PROVIDER_ID: {
-                    "name": "External Responses Runtime",
-                    "base_url": self.base_url,
-                    "wire_api": "responses",
-                    **({
-                        "env_http_headers": {self.runtime_header_name: self.env_key},
-                        "requires_openai_auth": True,
-                        "supports_websockets": False,
-                    } if self.runtime_header_name else {
-                        "env_key": self.env_key,
-                        "requires_openai_auth": False,
-                    }),
-                }
-            },
-        }
+        return {"model_provider": _PROVIDER_ID, "openai_base_url": self.base_url}
+
+    @property
+    def runtime_env_key(self) -> str:
+        return _RUNTIME_ENV_KEY
 
     @property
     def provider_id(self) -> str:
