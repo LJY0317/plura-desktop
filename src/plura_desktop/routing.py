@@ -73,12 +73,17 @@ class ResponsesRoute:
             f"{prefix}.name={_toml_string('External Responses Runtime')}",
             f"{prefix}.base_url={_toml_string(self.base_url)}",
             f"{prefix}.wire_api={_toml_string('responses')}",
-            f"{prefix}.env_key={_toml_string(self.env_key)}",
-            f"{prefix}.requires_openai_auth=false",
         )
         if self.runtime_header_name:
             values += (
                 f"{prefix}.env_http_headers.{_toml_string(self.runtime_header_name)}={_toml_string(self.env_key)}",
+                f"{prefix}.requires_openai_auth=true",
+                f"{prefix}.supports_websockets=false",
+            )
+        else:
+            values += (
+                f"{prefix}.env_key={_toml_string(self.env_key)}",
+                f"{prefix}.requires_openai_auth=false",
             )
         result: list[str] = []
         for value in values:
@@ -95,10 +100,14 @@ class ResponsesRoute:
                     "name": "External Responses Runtime",
                     "base_url": self.base_url,
                     "wire_api": "responses",
-                    "env_key": self.env_key,
-                    "requires_openai_auth": False,
-                    **({"env_http_headers": {self.runtime_header_name: self.env_key}}
-                       if self.runtime_header_name else {}),
+                    **({
+                        "env_http_headers": {self.runtime_header_name: self.env_key},
+                        "requires_openai_auth": True,
+                        "supports_websockets": False,
+                    } if self.runtime_header_name else {
+                        "env_key": self.env_key,
+                        "requires_openai_auth": False,
+                    }),
                 }
             },
         }

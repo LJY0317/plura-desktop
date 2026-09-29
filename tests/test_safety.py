@@ -872,8 +872,12 @@ class SafetyTests(unittest.TestCase):
             route.thread_config_overlay()["model_providers"][route.provider_id]["env_http_headers"],
             {"X-ChatGPT-Tela-Runtime": "CHATGPT_TELA_RUNTIME_TOKEN"},
         )
+        self.assertTrue(route.thread_config_overlay()["model_providers"][route.provider_id]["requires_openai_auth"])
+        self.assertNotIn("env_key", route.thread_config_overlay()["model_providers"][route.provider_id])
         self.assertIn('env_http_headers."X-ChatGPT-Tela-Runtime"="CHATGPT_TELA_RUNTIME_TOKEN"',
                       "\n".join(route.codex_config_args()))
+        self.assertIn("requires_openai_auth=true", "\n".join(route.codex_config_args()))
+        self.assertNotIn("env_key", "\n".join(route.codex_config_args()))
         self.assertNotIn("s" * 48, "\n".join(route.codex_config_args()))
         with self.assertRaisesRegex(ValueError, "header name"):
             ResponsesRoute.create("http://127.0.0.1:18741/v1", "CHATGPT_TELA_RUNTIME_TOKEN", "s" * 48,
