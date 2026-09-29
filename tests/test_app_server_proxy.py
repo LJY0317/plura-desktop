@@ -20,7 +20,10 @@ from plura_desktop.app_server_proxy import (  # noqa: E402
     _read_http_head,
     _websocket_accept,
     rewrite_app_server_request,
+    model_list_request_id,
+    overlay_model_list_response,
 )
+from plura_desktop.model_list_overlay import ModelListOverlay  # noqa: E402
 from plura_desktop.routing import ResponsesRoute  # noqa: E402
 
 
@@ -32,6 +35,35 @@ def _free_ws_endpoint() -> str:
 
 
 class AppServerProxyTests(unittest.TestCase):
+    def test_model_list_overlay_is_exact_and_failure_preserves_native_result(self) -> None:
+        class Callback:
+            calls = 0
+
+            def apply(self, result: object) -> object:
+                self.calls += 1
+                return {"data": [*result["data"], {"id": "web"}]}
+
+        callback = Callback()
+        pending = {model_list_request_id('{"id":7,"method":"model/list","params":{}}')}
+        self.assertEqual(pending, {"7"})
+        native = '{"id":7,"result":{"data":[{"id":"native"}]}}'
+        augmented = json.loads(overlay_model_list_response(native, pending, callback))
+        self.assertEqual([row["id"] for row in augmented["result"]["data"]], ["native", "web"])
+        self.assertEqual(callback.calls, 1)
+        self.assertEqual(pending, set())
+        self.assertEqual(overlay_model_list_response(native, pending, callback), native)
+
+        class FailingCallback:
+            def apply(self, _result: object) -> object:
+                raise TimeoutError("callback unavailable")
+
+        self.assertEqual(overlay_model_list_response(native, {"7"}, FailingCallback()), native)
+        self.assertIsNone(model_list_request_id('{"id":7,"method":"turn/start"}'))
+
+    def test_model_list_overlay_rejects_non_loopback_callback(self) -> None:
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            ModelListOverlay.create("https://example.com/model-list-overlay", "TEST_KEY", "s" * 48)
+
     def test_proxy_normalizes_localhost_listener_to_literal_loopback(self):
         route = ResponsesRoute.create(
             "http://127.0.0.1:9000/v1",

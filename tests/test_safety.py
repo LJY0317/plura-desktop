@@ -863,6 +863,22 @@ class SafetyTests(unittest.TestCase):
         )
         self.assertNotEqual(first.fingerprint, second.fingerprint)
 
+    def test_responses_runtime_header_is_sourced_from_env_without_exposing_secret(self):
+        route = ResponsesRoute.create(
+            "http://127.0.0.1:18741/v1", "CHATGPT_TELA_RUNTIME_TOKEN", "s" * 48,
+            "X-ChatGPT-Tela-Runtime",
+        )
+        self.assertEqual(
+            route.thread_config_overlay()["model_providers"][route.provider_id]["env_http_headers"],
+            {"X-ChatGPT-Tela-Runtime": "CHATGPT_TELA_RUNTIME_TOKEN"},
+        )
+        self.assertIn('env_http_headers."X-ChatGPT-Tela-Runtime"="CHATGPT_TELA_RUNTIME_TOKEN"',
+                      "\n".join(route.codex_config_args()))
+        self.assertNotIn("s" * 48, "\n".join(route.codex_config_args()))
+        with self.assertRaisesRegex(ValueError, "header name"):
+            ResponsesRoute.create("http://127.0.0.1:18741/v1", "CHATGPT_TELA_RUNTIME_TOKEN", "s" * 48,
+                                  "Bad Header")
+
     def test_run_app_server_routes_with_config_overrides_and_never_places_secret_on_argv(self):
         route = ResponsesRoute.create(
             "http://127.0.0.1:18741/v1",

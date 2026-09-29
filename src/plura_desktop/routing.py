@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 
 _ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+_HEADER_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,127}$")
 _PROVIDER_ID = "external_responses_runtime"
 
 
@@ -24,9 +25,12 @@ class ResponsesRoute:
     base_url: str
     env_key: str
     fingerprint: str
+    runtime_header_name: str | None = None
 
     @classmethod
-    def create(cls, base_url: str, env_key: str, credential: str) -> "ResponsesRoute":
+    def create(
+        cls, base_url: str, env_key: str, credential: str, runtime_header_name: str | None = None
+    ) -> "ResponsesRoute":
         parsed = urlsplit(base_url)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}:
             raise ValueError("Responses route must use loopback http://")
@@ -40,6 +44,8 @@ class ResponsesRoute:
             raise ValueError("Responses route env key must be an uppercase environment variable name")
         if len(credential) < 32:
             raise ValueError("Responses route credential must contain at least 32 characters")
+        if runtime_header_name is not None and not _HEADER_NAME.fullmatch(runtime_header_name):
+            raise ValueError("Responses route runtime header name is invalid")
         normalized = f"http://{parsed.hostname}:{parsed.port}/v1"
         credential_hash = hashlib.sha256(credential.encode("utf-8")).hexdigest()
         material = json.dumps(
@@ -48,6 +54,7 @@ class ResponsesRoute:
                 "credentialHash": credential_hash,
                 "envKey": env_key,
                 "provider": _PROVIDER_ID,
+                "runtimeHeaderName": runtime_header_name,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -56,6 +63,7 @@ class ResponsesRoute:
             base_url=normalized,
             env_key=env_key,
             fingerprint=hashlib.sha256(material).hexdigest(),
+            runtime_header_name=runtime_header_name,
         )
 
     def codex_config_args(self) -> tuple[str, ...]:
@@ -68,6 +76,10 @@ class ResponsesRoute:
             f"{prefix}.env_key={_toml_string(self.env_key)}",
             f"{prefix}.requires_openai_auth=false",
         )
+        if self.runtime_header_name:
+            values += (
+                f"{prefix}.env_http_headers.{_toml_string(self.runtime_header_name)}={_toml_string(self.env_key)}",
+            )
         result: list[str] = []
         for value in values:
             result.extend(("-c", value))
@@ -85,6 +97,8 @@ class ResponsesRoute:
                     "wire_api": "responses",
                     "env_key": self.env_key,
                     "requires_openai_auth": False,
+                    **({"env_http_headers": {self.runtime_header_name: self.env_key}}
+                       if self.runtime_header_name else {}),
                 }
             },
         }

@@ -19,6 +19,7 @@ from .manager import (
 )
 from .platforms import current_platform
 from .routing import ResponsesRoute
+from .model_list_overlay import ModelListOverlay
 from .version import __version__
 
 
@@ -92,6 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
             "The secret value is inherited, never placed on the command line."
         ),
     )
+    parser.add_argument("--responses-runtime-header-name", help="Optional provider header sourced from the Responses credential environment key")
+    parser.add_argument("--model-list-overlay-url", help="Optional loopback model-list callback for a routed target")
+    parser.add_argument("--model-list-overlay-env-key", help="Environment key containing the model-list callback token")
     parser.add_argument(
         "--app",
         help=(
@@ -130,6 +134,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.responses_base_url,
                 args.responses_env_key,
                 credential,
+                args.responses_runtime_header_name,
+            )
+        elif args.responses_runtime_header_name is not None:
+            raise ValueError("Responses runtime header requires a Responses route")
+        model_list_overlay = None
+        if args.model_list_overlay_url is not None or args.model_list_overlay_env_key is not None:
+            if not args.model_list_overlay_url or not args.model_list_overlay_env_key or responses_route is None:
+                raise ValueError("Model-list overlay requires a routed target, URL, and environment key")
+            token = os.environ.get(args.model_list_overlay_env_key)
+            if token is None:
+                raise ValueError("Model-list overlay credential environment variable is missing")
+            model_list_overlay = ModelListOverlay.create(
+                args.model_list_overlay_url, args.model_list_overlay_env_key, token,
             )
         platform = current_platform(app_override=args.app)
         if args.command == "targets":
@@ -149,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
                 platform,
                 args.target,
                 responses_route=responses_route,
+                model_list_overlay=model_list_overlay,
                 renderer_cdp=args.renderer_cdp,
             )
             if args.json:
@@ -194,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
                 platform,
                 args.target,
                 responses_route=responses_route,
+                model_list_overlay=model_list_overlay,
                 renderer_cdp=args.renderer_cdp,
             )
 

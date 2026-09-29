@@ -20,6 +20,7 @@ class TargetSession:
     backend_pid: int
     desktop_pid: int
     responses_route_fingerprint: str | None = None
+    model_list_overlay_fingerprint: str | None = None
     renderer_cdp_endpoint: str | None = None
 
 
@@ -119,6 +120,11 @@ def load_session(platform: DesktopPlatform, metadata: Path, target_id: str) -> T
                 if raw.get("responsesRouteFingerprint") is not None
                 else None
             ),
+            model_list_overlay_fingerprint=(
+                str(raw["modelListOverlayFingerprint"])
+                if raw.get("modelListOverlayFingerprint") is not None
+                else None
+            ),
             renderer_cdp_endpoint=(
                 str(raw["rendererCDPEndpoint"])
                 if raw.get("rendererCDPEndpoint") is not None
@@ -155,6 +161,11 @@ def atomic_write_session(path: Path, session: TargetSession) -> None:
                 **(
                     {"responsesRouteFingerprint": session.responses_route_fingerprint}
                     if session.responses_route_fingerprint is not None
+                    else {}
+                ),
+                **(
+                    {"modelListOverlayFingerprint": session.model_list_overlay_fingerprint}
+                    if session.model_list_overlay_fingerprint is not None
                     else {}
                 ),
                 **(

@@ -324,6 +324,8 @@ When a Responses route is active, the supervisor keeps the Codex app-server on a
 
 With `--json`, `launch-target` returns the same public ready-session shape as `target-session --json`. Controllers can therefore obtain the canonical loopback app-server endpoint and route fingerprint without reading launcher metadata or private profile paths.
 
+An integration that adds its own model rows can supply `--model-list-overlay-url` and `--model-list-overlay-env-key` together with a Responses route. Plura sends only matched `model/list` results to that exact loopback HTTP callback, using a bearer token inherited from the named environment variable. The callback must return `{ "contractVersion": 1, "result": ... }`; if it fails, Plura returns the original Native model list. `modelListOverlaySupported` advertises this optional target capability, and `modelListOverlayFingerprint` identifies the active callback in `target-session --json`. `--responses-runtime-header-name` can also source one provider HTTP header from the Responses credential environment key without putting its value on the command line.
+
 Controllers that need to inspect the official Desktop renderer can opt in to a Chromium DevTools endpoint at launch:
 
 ```sh

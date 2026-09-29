@@ -22,6 +22,7 @@ from .app_server_proxy import RoutePreservingAppServerProxy
 from .platforms import DesktopPlatform, current_platform
 from .platforms.base import STABLE_FROZEN_RUNTIME_ENV
 from .routing import ResponsesRoute
+from .model_list_overlay import ModelListOverlay
 from .runtime import (
     TargetSession,
     acquire_runtime_claim,
@@ -568,6 +569,7 @@ def public_targets(platform: DesktopPlatform) -> dict[str, Any]:
             "runningProcessCount": len(default_running),
             "sharedAppServerSupported": default_shared_app_server,
             "responsesRouteSupported": default_shared_app_server,
+            "modelListOverlaySupported": default_shared_app_server,
             "rendererCDPSupported": default_shared_app_server,
         }
     ]
@@ -587,10 +589,12 @@ def public_targets(platform: DesktopPlatform) -> dict[str, Any]:
                     platform.resolve_codex_executable(executable)
                     target["sharedAppServerSupported"] = True
                     target["responsesRouteSupported"] = True
+                    target["modelListOverlaySupported"] = True
                     target["rendererCDPSupported"] = True
                 except (OSError, RuntimeError, ValueError):
                     target["sharedAppServerSupported"] = False
                     target["responsesRouteSupported"] = False
+                    target["modelListOverlaySupported"] = False
                     target["rendererCDPSupported"] = False
                 targets.append(target)
             except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
@@ -674,6 +678,8 @@ def target_session(platform: DesktopPlatform, target_id: str) -> dict[str, Any]:
         value["desktopProcessID"] = session.desktop_pid
         if session.responses_route_fingerprint is not None:
             value["responsesRouteFingerprint"] = session.responses_route_fingerprint
+        if session.model_list_overlay_fingerprint is not None:
+            value["modelListOverlayFingerprint"] = session.model_list_overlay_fingerprint
         if session.renderer_cdp_endpoint is not None:
             value["rendererCDPEndpoint"] = session.renderer_cdp_endpoint
     elif state == "restart-required":
@@ -816,6 +822,7 @@ def launch_target(
     target_id: str,
     *,
     responses_route: ResponsesRoute | None = None,
+    model_list_overlay: ModelListOverlay | None = None,
     renderer_cdp: bool = False,
 ) -> TargetSession:
     target = _target(platform, target_id)
@@ -825,6 +832,8 @@ def launch_target(
             raise RuntimeError(
                 f"Target is already running with a different Responses route; quit it normally once: {target_id}"
             )
+        if model_list_overlay is not None and existing.model_list_overlay_fingerprint != model_list_overlay.fingerprint:
+            raise RuntimeError("Target is already running with a different model-list overlay; quit it normally once")
         if renderer_cdp and existing.renderer_cdp_endpoint is None:
             raise RuntimeError(
                 f"Target is already running without renderer CDP; quit it normally once: {target_id}"
@@ -836,6 +845,8 @@ def launch_target(
         raise RuntimeError(f"Target does not support canonical runtime sessions: {target_id}")
     if responses_route is not None and target.get("responsesRouteSupported") is not True:
         raise RuntimeError(f"Target does not support launch-time Responses routing: {target_id}")
+    if model_list_overlay is not None and (responses_route is None or target.get("modelListOverlaySupported") is not True):
+        raise RuntimeError(f"Target does not support model-list overlay routing: {target_id}")
     if target.get("state") != "stopped":
         raise RuntimeError(
             f"Target is already running outside the canonical runtime; quit it normally once: {target_id}"
@@ -852,6 +863,13 @@ def launch_target(
             responses_route.base_url,
             "--responses-env-key",
             responses_route.env_key,
+        ))
+        if responses_route.runtime_header_name:
+            extra.extend(("--responses-runtime-header-name", responses_route.runtime_header_name))
+    if model_list_overlay is not None:
+        extra.extend((
+            "--model-list-overlay-url", model_list_overlay.url,
+            "--model-list-overlay-env-key", model_list_overlay.env_key,
         ))
     if renderer_cdp:
         extra.append("--renderer-cdp")
@@ -956,6 +974,7 @@ def supervise_target(
     target_id: str,
     *,
     responses_route: ResponsesRoute | None = None,
+    model_list_overlay: ModelListOverlay | None = None,
     renderer_cdp: bool = False,
 ) -> int:
     claim = acquire_runtime_claim(platform, _metadata(platform), target_id)
@@ -982,6 +1001,8 @@ def supervise_target(
                 "--responses-env-key",
                 responses_route.env_key,
             ))
+            if responses_route.runtime_header_name:
+                route_args.extend(("--responses-runtime-header-name", responses_route.runtime_header_name))
         backend = subprocess.Popen(
             _private_command(
                 platform,
@@ -1010,6 +1031,7 @@ def supervise_target(
                 endpoint,
                 backend_endpoint,
                 responses_route,
+                **({"model_list_overlay": model_list_overlay} if model_list_overlay else {}),
             )
             route_proxy.start()
             deadline = min(startup_deadline, time.monotonic() + 5.0)
@@ -1064,6 +1086,7 @@ def supervise_target(
                 backend_pid=backend.pid,
                 desktop_pid=desktop.pid,
                 responses_route_fingerprint=(responses_route.fingerprint if responses_route else None),
+                model_list_overlay_fingerprint=(model_list_overlay.fingerprint if model_list_overlay else None),
                 renderer_cdp_endpoint=renderer_cdp_endpoint,
             ),
         )
