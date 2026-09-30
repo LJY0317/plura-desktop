@@ -897,6 +897,7 @@ class SafetyTests(unittest.TestCase):
             )
         command = execve.call_args.args[1]
         environment = execve.call_args.args[2]
+        self.assertEqual(command[1], "app-server")
         rendered = "\n".join(command)
         self.assertIn('model_provider="openai"', rendered)
         self.assertIn(f'openai_base_url="{route.base_url}"', rendered)
