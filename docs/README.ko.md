@@ -108,7 +108,15 @@ plura-desktop launch --profile 2
 
 macOS에서는 `~/Applications/ChatGPT Profile 2.app`이 생성되며 이후 일반 앱처럼 실행할 수 있습니다. 공식 `/Applications/ChatGPT.app`은 그대로 유지됩니다.
 
+### ChatGPT 자체 업데이트
+
+공식/default ChatGPT 설치본만 **애플리케이션 업데이트의 유일한 기준**입니다. ChatGPT 자체 업데이트는 기본 ChatGPT 앱에서 진행합니다. macOS의 managed Profile 2+ runtime clone은 독립 설치본이 아니라 언제든 다시 만들 수 있는 derived runtime입니다. 공식 앱이 바뀌면 다음 managed profile cold launch에서 login/conversation state는 그대로 둔 채 공식 앱 기준으로 runtime/selector를 자동 refresh합니다. 이미 실행 중인 managed profile을 강제로 종료하거나 실행 중인 runtime을 교체하지 않으며, 사용자가 정상 종료한 뒤 다음 실행에서 새 공식 build를 따라갑니다.
+
+Plura는 ChatGPT의 업데이트 UI를 patch하지 않습니다. 현재 macOS build처럼 Sparkle capability가 감지되면 managed launch에만 process-local Sparkle 기본값을 전달해 예약된 자동 update check/download를 억제하며, 공식 앱이나 default profile의 환경설정은 바꾸지 않습니다. 수동 upstream update UI는 남을 수 있습니다. 그 경로로 managed clone이 변경되더라도 해당 clone은 authoritative state가 아니므로 다음 managed launch 전에 공식 앱 기준으로 폐기·재생성합니다.
+
 ### 업데이트
+
+이 절은 위의 ChatGPT 앱 자체가 아니라 **Plura Desktop 자체 업데이트**를 설명합니다.
 
 macOS DMG 간편 설치를 사용했다면 다음 파일을 더블클릭합니다.
 
@@ -210,7 +218,7 @@ Linux는 XDG 환경 변수가 없으면 `~/.local/share`, `~/.config`, `~/.local
 
 `PluraDesktop` metadata 내부의 역할도 고정합니다. `profile-N-install-manifest.json`은 ownership/provenance state, `control-runtime`은 refresh 가능한 설치 코드, `runtime-sessions`는 live runtime용 임시 claim/descriptor, macOS `runtime-apps/profile-N` 및 Windows/Linux `profile-N-runtime`은 재생성 가능한 derived runtime입니다. 선택적으로 저장하는 진단 증거는 `diagnostics/profile-N/incidents` 아래에만 두며 Profile당 최대 10개, incident당 최대 256 KiB로 제한합니다. macOS 간편 installer를 사용한 경우 `distribution/cli-runtime`과 `bin`은 installer-owned standalone CLI runtime/launcher이며 full uninstall 도구가 managed profile 제거 후 함께 정리합니다. 별도 background cache/telemetry/rolling product log는 만들지 않습니다.
 
-Apple Silicon macOS에서는 현재 공식 ChatGPT 앱으로 로그인까지 포함한 실제 E2E를 검증했습니다. `/Applications/ChatGPT.app` 원본은 항상 read-only이며, managed profile용 runtime clone은 launcher metadata 아래의 재생성 가능한 derived code입니다. Intel macOS standalone은 native Intel GitHub runner에서 build/smoke까지 통과했지만 Intel 공식 앱 E2E는 아직 별도 gate입니다. Windows는 CI에서 fake executable로 공통 lifecycle, selector, 경로/환경 contract를 검증합니다. Linux는 이 공통 CI에 더해 OpenAI의 현재 공식 Ubuntu/Debian preview package를 Ubuntu 24.04 runner에 실제 설치하고, `chatgpt` wrapper → 실제 `ChatGPT` executable, bundled `resources/codex`, 좁은 GUI session 환경, isolated Profile 2 설치, generated selector를 통한 renderer-enabled canonical launch까지 검증합니다. **다만 실제 사용자 로그인 유지, default profile과의 독립 사용, product 정상 quit, refresh/uninstall 전체 실사용 흐름은 아직 별도 gate입니다.**
+Apple Silicon macOS에서는 현재 공식 ChatGPT 앱으로 로그인까지 포함한 실제 E2E를 검증했습니다. `/Applications/ChatGPT.app` 원본은 항상 read-only이며 애플리케이션 업데이트의 유일한 기준입니다. managed profile용 runtime clone은 launcher metadata 아래의 재생성 가능한 disposable derived code이고, 공식 앱 업데이트나 managed clone 변경이 감지되면 다음 cold launch 전에 공식 앱 기준으로 다시 맞춥니다. Intel macOS standalone은 native Intel GitHub runner에서 build/smoke까지 통과했지만 Intel 공식 앱 E2E는 아직 별도 gate입니다. Windows는 CI에서 fake executable로 공통 lifecycle, selector, 경로/환경 contract를 검증합니다. Linux는 이 공통 CI에 더해 OpenAI의 현재 공식 Ubuntu/Debian preview package를 Ubuntu 24.04 runner에 실제 설치하고, `chatgpt` wrapper → 실제 `ChatGPT` executable, bundled `resources/codex`, 좁은 GUI session 환경, isolated Profile 2 설치, generated selector를 통한 renderer-enabled canonical launch까지 검증합니다. **다만 실제 사용자 로그인 유지, default profile과의 독립 사용, product 정상 quit, refresh/uninstall 전체 실사용 흐름은 아직 별도 gate입니다.**
 
 Windows/Linux를 실제 지원으로 표시하기 위한 정확한 실기기 gate는 [PLATFORM_VERIFICATION.md](PLATFORM_VERIFICATION.md)에 고정합니다.
 

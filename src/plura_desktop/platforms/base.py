@@ -186,6 +186,16 @@ class DesktopPlatform(ABC):
     ) -> Path:
         return executable
 
+    def profile_process_executable(self, layout: ProfileLayout, executable: Path) -> Path:
+        """Return the executable path used by an already-created managed profile runtime.
+
+        Unlike ``profile_executable`` this does not assert that a derived runtime still matches
+        the current official application. Lifecycle operations such as a normal quit must remain
+        able to identify an older managed process after the official app has updated underneath it.
+        Generic platforms launch the official executable directly, so the two paths are identical.
+        """
+        return executable
+
     def remove_profile_runtime(self, layout: ProfileLayout) -> None:
         """Remove only platform-generated per-profile runtime artifacts."""
 

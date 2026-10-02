@@ -367,6 +367,40 @@ class SafetyTests(unittest.TestCase):
         for path, before in identities.items():
             self.assertEqual(self.platform.identity(path), before)
 
+    def test_cold_launch_follows_updated_official_app_without_replacing_profile_state(self):
+        self.profile.install()
+        identities = {entry.role: self.platform.identity(entry.path) for entry in self.profile.layout.managed}
+        (self.profile.codex / "conversation-sentinel").write_text("keep", encoding="utf-8")
+        (self.profile.data / "login-sentinel").write_text("keep", encoding="utf-8")
+        self.app.write_bytes(b"updated official fixture")
+
+        session = TargetSession(self.profile.identifier, "ws://127.0.0.1:18762", 11, 12, 13)
+        with patch("plura_desktop.manager._start_detached") as start, patch(
+            "plura_desktop.manager._wait_for_session", return_value=session
+        ):
+            result = launch_target(self.platform, self.profile.identifier)
+
+        self.assertEqual(result, session)
+        self.assertEqual(self.profile.load()["official_baseline"], self.platform.fingerprint(self.app))
+        self.assertEqual(
+            identities,
+            {entry.role: self.platform.identity(entry.path) for entry in self.profile.layout.managed},
+        )
+        self.assertEqual((self.profile.codex / "conversation-sentinel").read_text(), "keep")
+        self.assertEqual((self.profile.data / "login-sentinel").read_text(), "keep")
+        start.assert_called_once()
+
+    def test_updated_official_app_never_refreshes_a_running_managed_profile(self):
+        self.profile.install()
+        baseline = self.profile.load()["official_baseline"]
+        self.app.write_bytes(b"updated official fixture")
+        self.platform.running_pids = [123]
+
+        with self.assertRaisesRegex(RuntimeError, "Quit ChatGPT Profile 2"):
+            self.profile.prepare_launch()
+
+        self.assertEqual(self.profile.load()["official_baseline"], baseline)
+
     def test_diagnostics_setting_is_manifest_state_not_background_work(self):
         self.profile.install()
         self.assertFalse(self.profile.tool_lifecycle_diagnostics_enabled(self.profile.load()))
@@ -1498,6 +1532,108 @@ class PlatformContractTests(unittest.TestCase):
             ),
             runtime_executable,
         )
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
+    def test_macos_managed_runtime_mutation_is_discarded_in_favor_of_official_app(self):
+        fake_bundle = self.home / "ChatGPT.app"
+        executable = fake_bundle / "Contents/MacOS/ChatGPT"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"official-fixture")
+        executable.chmod(0o755)
+        resources = fake_bundle / "Contents/Resources"
+        resources.mkdir(parents=True)
+        (resources / "electron.icns").write_bytes(b"icon")
+        (resources / "app.asar").write_bytes(b"official-asar")
+        with (fake_bundle / "Contents/Info.plist").open("wb") as file:
+            plistlib.dump({"CFBundleIconFile": "electron.icns"}, file)
+
+        platform = MacOSPlatform(home=self.home, app_override=executable)
+        profile = Profile(index=2, platform=platform)
+        profile.install()
+        profile_state_identities = {
+            "codex": platform.identity(profile.codex),
+            "data": platform.identity(profile.data),
+        }
+        official_before = {
+            relative: (fake_bundle / relative).read_bytes()
+            for relative in (
+                Path("Contents/Info.plist"),
+                Path("Contents/MacOS/ChatGPT"),
+                Path("Contents/Resources/app.asar"),
+            )
+        }
+        runtime_bundle = profile.meta / "runtime-apps/profile-2/ChatGPT.app"
+        runtime_executable = runtime_bundle / "Contents/MacOS/ChatGPT"
+        runtime_executable.write_bytes(b"managed-self-update")
+
+        prepared = profile.prepare_launch()
+
+        self.assertEqual(prepared, runtime_executable)
+        self.assertEqual(runtime_executable.read_bytes(), b"official-fixture")
+        self.assertEqual(platform.identity(profile.codex), profile_state_identities["codex"])
+        self.assertEqual(platform.identity(profile.data), profile_state_identities["data"])
+        for relative, before in official_before.items():
+            self.assertEqual((fake_bundle / relative).read_bytes(), before)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
+    def test_macos_stale_managed_runtime_path_remains_addressable_for_normal_quit(self):
+        fake_bundle = self.home / "ChatGPT.app"
+        executable = fake_bundle / "Contents/MacOS/ChatGPT"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"official-v1")
+        executable.chmod(0o755)
+        resources = fake_bundle / "Contents/Resources"
+        resources.mkdir(parents=True)
+        (resources / "electron.icns").write_bytes(b"icon")
+        (resources / "app.asar").write_bytes(b"asar-v1")
+        with (fake_bundle / "Contents/Info.plist").open("wb") as file:
+            plistlib.dump({"CFBundleIconFile": "electron.icns"}, file)
+
+        platform = MacOSPlatform(home=self.home, app_override=executable)
+        profile = Profile(index=2, platform=platform)
+        profile.install()
+        runtime_executable = profile.meta / "runtime-apps/profile-2/ChatGPT.app/Contents/MacOS/ChatGPT"
+
+        executable.write_bytes(b"official-v2")
+        (resources / "app.asar").write_bytes(b"asar-v2")
+
+        self.assertEqual(
+            platform.profile_process_executable(profile.layout, executable),
+            runtime_executable,
+        )
+        with self.assertRaisesRegex(RuntimeError, "missing or stale"):
+            platform.profile_executable(
+                profile.layout,
+                executable,
+                source_fingerprint=profile.load()["official_baseline"],
+            )
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
+    def test_macos_managed_sparkle_runtime_suppresses_only_automatic_update_checks(self):
+        fake_bundle = self.home / "ChatGPT.app"
+        executable = fake_bundle / "Contents/MacOS/ChatGPT"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"fixture")
+        executable.chmod(0o755)
+        (fake_bundle / "Contents/Frameworks/Sparkle.framework").mkdir(parents=True)
+        platform = MacOSPlatform(home=self.home, app_override=executable)
+        layout = platform.layout(2)
+
+        command = platform.process_command(executable, layout)
+
+        self.assertIn("-SUEnableAutomaticChecks", command)
+        self.assertIn("-SUAutomaticallyUpdate", command)
+        self.assertEqual(command[command.index("-SUEnableAutomaticChecks") + 1], "NO")
+        self.assertEqual(command[command.index("-SUAutomaticallyUpdate") + 1], "NO")
+
+        no_sparkle_bundle = self.home / "ChatGPT-NoSparkle.app"
+        no_sparkle_executable = no_sparkle_bundle / "Contents/MacOS/ChatGPT"
+        no_sparkle_executable.parent.mkdir(parents=True)
+        no_sparkle_executable.write_bytes(b"fixture")
+        no_sparkle_executable.chmod(0o755)
+        command_without_sparkle = platform.process_command(no_sparkle_executable, layout)
+        self.assertNotIn("-SUEnableAutomaticChecks", command_without_sparkle)
+        self.assertNotIn("-SUAutomaticallyUpdate", command_without_sparkle)
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
     def test_macos_running_default_does_not_match_managed_profile_prefix(self):

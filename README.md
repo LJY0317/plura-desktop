@@ -117,7 +117,15 @@ Sign in normally in the new **ChatGPT Profile 2** window. Do not copy cookies, a
 
 On macOS the install creates `~/Applications/ChatGPT Profile 2.app`, which can then be launched like a normal app. The official `/Applications/ChatGPT.app` remains untouched.
 
+### Updating ChatGPT itself
+
+The official/default ChatGPT installation is the **only application-update authority**. Update ChatGPT from the normal/default ChatGPT app. Managed Profile 2+ macOS runtimes are disposable derived clones, not independent application installations: after the official app changes, the next cold managed-profile launch refreshes its derived runtime/selector from the official app while preserving that profile's login and conversation state. A managed profile that is already running is never killed or rewritten underneath; it follows the new official build only after a normal quit and later launch.
+
+Plura does not patch ChatGPT's update UI. On current macOS builds that expose Sparkle, managed launches use process-local Sparkle defaults to suppress scheduled automatic update checks/downloads without changing the official app or default-profile preferences. Manual upstream update UI can still exist. If an upstream self-updater nevertheless changes a managed clone, Plura treats that clone as disposable and reconciles it back to the official app before the next managed launch.
+
 ### Update
+
+This section updates **Plura Desktop itself**, not the ChatGPT application above.
 
 For the guided macOS DMG install, double-click:
 
@@ -241,7 +249,7 @@ There is currently no Plura Desktop background cache, telemetry store, or rollin
 
 ## Platform support and verification
 
-- **macOS Apple Silicon:** official-app E2E verified. The official `/Applications/ChatGPT.app` remains read-only. Managed profiles launch from a byte-identical, still-validly-signed APFS copy-on-write runtime clone under the launcher metadata directory; the clone is derived code, not profile state, and is refreshed when the official app changes.
+- **macOS Apple Silicon:** official-app E2E verified. The official `/Applications/ChatGPT.app` remains read-only and is the sole application-update authority. Managed profiles launch from a byte-identical, still-validly-signed APFS copy-on-write runtime clone under the launcher metadata directory; the clone is disposable derived code, not profile state, and is reconciled to the official app on the next cold launch after an official update or managed-clone mutation.
 - **macOS Intel:** the standalone runtime is built and smoke-tested on a native Intel GitHub runner, but the current official ChatGPT app has not completed this repository's full Intel real-app verification flow yet.
 - **Windows:** lifecycle, path layout, selector generation, sanitized environment, and process-ownership adapter are covered by CI. A real official-app launch has not yet been verified on a Windows machine in this repository.
 - **Linux:** the current official OpenAI Ubuntu/Debian preview package is continuously exercised on Ubuntu 24.04 CI. Plura resolves the documented `chatgpt` wrapper to the real packaged `ChatGPT` executable, uses the sibling bundled Codex app-server, preserves a narrow X11/Wayland/D-Bus session environment, installs an isolated Profile 2, and launches the generated selector to a canonical renderer-enabled ready session under Xvfb. This proves the current package/launch integration boundary, but it does **not** yet prove interactive sign-in persistence, independent default-profile use, normal product-driven quit, or the full real-user refresh/uninstall flow.

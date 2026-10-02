@@ -263,6 +263,12 @@ class MacOSPlatform(DesktopPlatform):
             )
         return self._profile_runtime_executable(layout)
 
+    def profile_process_executable(self, layout: ProfileLayout, executable: Path) -> Path:
+        runtime_executable = self._profile_runtime_executable(layout)
+        if not runtime_executable.is_file():
+            raise RuntimeError(f"{layout.display_name} signed ChatGPT runtime is missing")
+        return runtime_executable
+
     def remove_profile_runtime(self, layout: ProfileLayout) -> None:
         runtime_root = self._profile_runtime_root(layout)
         if not runtime_root.exists():
@@ -537,6 +543,26 @@ class MacOSPlatform(DesktopPlatform):
         if os.environ.get("TMPDIR"):
             env["TMPDIR"] = os.environ["TMPDIR"]
         return env
+
+    def process_command(self, executable: Path, layout: ProfileLayout) -> list[str]:
+        command = super().process_command(executable, layout)
+        try:
+            bundle = self._bundle_for_executable(executable)
+        except RuntimeError:
+            return command
+        # Current official macOS builds use Sparkle. Keep this as an adapter-scoped capability,
+        # not a core dependency: when Sparkle is present, process-local NSArgumentDomain defaults
+        # suppress scheduled checks/downloads for managed derived runtimes without changing the
+        # official app or the user's default-profile preferences. Manual upstream UI may still be
+        # available, and the authority invariant below does not rely on these arguments existing.
+        if (bundle / "Contents/Frameworks/Sparkle.framework").exists():
+            command.extend((
+                "-SUEnableAutomaticChecks",
+                "NO",
+                "-SUAutomaticallyUpdate",
+                "NO",
+            ))
+        return command
 
     def launch(
         self,

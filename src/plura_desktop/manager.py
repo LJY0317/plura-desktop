@@ -345,24 +345,53 @@ class Profile:
     def running(self) -> list[int]:
         return self.platform.running(self.layout)
 
-    def launch(
-        self,
-        *,
-        app_server_url: str | None = None,
-        renderer_cdp_port: int | None = None,
-    ) -> None:
+    def prepare_launch(self) -> Path:
+        """Converge disposable managed runtime state on the current official application.
+
+        The official/default ChatGPT installation is the sole application-update authority.
+        Managed profile state is persistent, while selectors and per-profile runtimes are derived
+        artifacts that may be refreshed only when that managed profile is stopped.
+        """
         manifest = self.load()
         if not manifest["ready"]:
             raise RuntimeError("Installation incomplete")
         for entry in self.layout.managed:
             if not entry.path.exists() or not self.platform.check_kind(entry):
                 raise RuntimeError(f"Managed path missing; refusing implicit recreation: {entry.path}")
+
         executable = self.platform.resolve_executable(manifest["app_executable"])
-        executable = self.platform.profile_executable(
+        source_fingerprint = self.platform.fingerprint(executable)
+        if source_fingerprint != manifest["official_baseline"]:
+            if self.running():
+                raise RuntimeError(
+                    f"Quit {self.display_name} before following the updated official ChatGPT application"
+                )
+            self.refresh()
+            manifest = self.load()
+
+        # Even when the official application has not changed, a managed macOS clone may have
+        # been changed by an upstream self-updater. Reconcile that disposable runtime back to the
+        # recorded official baseline before launch. Generic platforms make this a no-op.
+        self.platform.prepare_profile_runtime(
+            self.layout,
+            executable,
+            source_fingerprint=manifest["official_baseline"],
+            profile_running=bool(self.running()),
+        )
+        return self.platform.profile_executable(
             self.layout,
             executable,
             source_fingerprint=manifest["official_baseline"],
         )
+
+    def launch(
+        self,
+        *,
+        app_server_url: str | None = None,
+        renderer_cdp_port: int | None = None,
+    ) -> None:
+        executable = self.prepare_launch()
+        manifest = self.load()
         rust_log = None
         if self.tool_lifecycle_diagnostics_enabled(manifest):
             rust_log = self.platform.tool_lifecycle_diagnostic_rust_log()
@@ -686,11 +715,7 @@ def target_session(platform: DesktopPlatform, target_id: str) -> dict[str, Any]:
                 profile = Profile(index=index, platform=platform)
                 manifest = profile.load()
                 source = platform.resolve_executable(manifest["app_executable"])
-                executable = platform.profile_executable(
-                    profile.layout,
-                    source,
-                    source_fingerprint=manifest["official_baseline"],
-                )
+                executable = platform.profile_process_executable(profile.layout, source)
         if executable is not None:
             desktop_pid = platform.desktop_process_id(executable)
             if desktop_pid is not None:
@@ -708,11 +733,7 @@ def _target_executable(platform: DesktopPlatform, target: dict[str, Any]) -> Pat
     profile = Profile(index=index, platform=platform)
     manifest = profile.load()
     source = platform.resolve_executable(manifest["app_executable"])
-    return platform.profile_executable(
-        profile.layout,
-        source,
-        source_fingerprint=manifest["official_baseline"],
-    )
+    return platform.profile_process_executable(profile.layout, source)
 
 
 def quit_target(
@@ -840,6 +861,11 @@ def launch_target(
         raise RuntimeError(
             f"Target is already running outside the canonical runtime; quit it normally once: {target_id}"
         )
+    if target.get("managed") is True:
+        index = target.get("profileIndex")
+        if not isinstance(index, int):
+            raise RuntimeError(f"Managed target has no profile index: {target_id}")
+        Profile(index=index, platform=platform).prepare_launch()
     descriptor = descriptor_path(_metadata(platform), target_id)
     try:
         descriptor.unlink()
