@@ -4,6 +4,9 @@ All notable public changes to Plura Desktop will be documented here from the fir
 
 ## [Unreleased]
 
+- Make macOS managed-profile selector refresh transactional: build and validate a complete replacement `Contents` tree before atomically exchanging it with the live selector, preserving the selector app and its manifest-owned identity if preparation fails.
+- Fix source/package selector self-refresh when the running selector's copied Plura runtime is also the source for the replacement; refresh no longer deletes its own source files before copying them.
+
 ## [0.1.16] - 2026-09-29
 
 - Make `quit-target` wait through transient `restart-required` state until the exact Desktop target is actually relaunchable. This closes a race where a normal quit completed but an immediate canonical relaunch could still be rejected, leaving the profile closed instead of reopening it.

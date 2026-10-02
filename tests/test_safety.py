@@ -1313,6 +1313,123 @@ class PlatformContractTests(unittest.TestCase):
         self.assertFalse(profile.meta.joinpath("runtime-apps/profile-2").exists())
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
+    def test_macos_selector_self_refresh_stages_before_replacing_its_runtime_source(self):
+        fake_bundle = self.home / "ChatGPT.app"
+        executable = fake_bundle / "Contents/MacOS/ChatGPT"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"fixture")
+        executable.chmod(0o755)
+        resources = fake_bundle / "Contents/Resources"
+        resources.mkdir(parents=True)
+        (resources / "electron.icns").write_bytes(b"icon")
+        (resources / "app.asar").write_bytes(b"asar-fixture")
+        with (fake_bundle / "Contents/Info.plist").open("wb") as file:
+            plistlib.dump({"CFBundleIconFile": "electron.icns"}, file)
+
+        platform = MacOSPlatform(home=self.home, app_override=executable)
+        profile = Profile(index=2, platform=platform)
+        profile.install()
+        selector_identity = platform.identity(profile.wrapper)
+        old_contents_inode = (profile.wrapper / "Contents").stat().st_ino
+        copied_entrypoint = profile.wrapper / "Contents/Resources/plura_desktop_cli.py"
+        copied_package = profile.wrapper / "Contents/Resources/plura_desktop"
+
+        # A selector launched from its copied Python runtime refreshes using sources inside its
+        # own current Contents tree. The replacement must be complete before that tree is swapped.
+        platform.write_selector(
+            profile.layout,
+            copied_entrypoint,
+            copied_package,
+            executable,
+        )
+
+        self.assertEqual(platform.identity(profile.wrapper), selector_identity)
+        self.assertNotEqual((profile.wrapper / "Contents").stat().st_ino, old_contents_inode)
+        self.assertTrue((profile.wrapper / "Contents/MacOS/launcher").is_file())
+        self.assertTrue((profile.wrapper / "Contents/Resources/plura_desktop_cli.py").is_file())
+        self.assertTrue((profile.wrapper / "Contents/Resources/plura_desktop/__init__.py").is_file())
+        self.assertEqual(list(profile.wrapper.parent.glob(f".{profile.wrapper.name}.next-*")), [])
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
+    def test_macos_selector_build_failure_preserves_previous_complete_bundle(self):
+        fake_bundle = self.home / "ChatGPT.app"
+        executable = fake_bundle / "Contents/MacOS/ChatGPT"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"fixture")
+        executable.chmod(0o755)
+        resources = fake_bundle / "Contents/Resources"
+        resources.mkdir(parents=True)
+        (resources / "electron.icns").write_bytes(b"icon")
+        (resources / "app.asar").write_bytes(b"asar-fixture")
+        with (fake_bundle / "Contents/Info.plist").open("wb") as file:
+            plistlib.dump({"CFBundleIconFile": "electron.icns"}, file)
+
+        platform = MacOSPlatform(home=self.home, app_override=executable)
+        profile = Profile(index=2, platform=platform)
+        profile.install()
+        launcher = profile.wrapper / "Contents/MacOS/launcher"
+        info = profile.wrapper / "Contents/Info.plist"
+        selector_identity = platform.identity(profile.wrapper)
+        contents_identity = platform.identity(profile.wrapper / "Contents")
+        before_launcher = launcher.read_bytes()
+        before_info = info.read_bytes()
+
+        with patch(
+            "plura_desktop.platforms.macos.shutil.copy2",
+            side_effect=OSError("injected selector build failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "injected selector build failure"):
+                platform.write_selector(
+                    profile.layout,
+                    SRC / "plura_desktop/_runtime_entrypoint.py",
+                    SRC / "plura_desktop",
+                    executable,
+                )
+
+        self.assertEqual(platform.identity(profile.wrapper), selector_identity)
+        self.assertEqual(platform.identity(profile.wrapper / "Contents"), contents_identity)
+        self.assertEqual(launcher.read_bytes(), before_launcher)
+        self.assertEqual(info.read_bytes(), before_info)
+        self.assertEqual(list(profile.wrapper.parent.glob(f".{profile.wrapper.name}.next-*")), [])
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
+    def test_macos_selector_exchange_failure_preserves_previous_complete_bundle(self):
+        fake_bundle = self.home / "ChatGPT.app"
+        executable = fake_bundle / "Contents/MacOS/ChatGPT"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"fixture")
+        executable.chmod(0o755)
+        resources = fake_bundle / "Contents/Resources"
+        resources.mkdir(parents=True)
+        (resources / "electron.icns").write_bytes(b"icon")
+        (resources / "app.asar").write_bytes(b"asar-fixture")
+        with (fake_bundle / "Contents/Info.plist").open("wb") as file:
+            plistlib.dump({"CFBundleIconFile": "electron.icns"}, file)
+
+        platform = MacOSPlatform(home=self.home, app_override=executable)
+        profile = Profile(index=2, platform=platform)
+        profile.install()
+        launcher = profile.wrapper / "Contents/MacOS/launcher"
+        info = profile.wrapper / "Contents/Info.plist"
+        contents_identity = platform.identity(profile.wrapper / "Contents")
+        before_launcher = launcher.read_bytes()
+        before_info = info.read_bytes()
+
+        with patch.object(platform, "_exchange_paths", side_effect=OSError("injected exchange failure")):
+            with self.assertRaisesRegex(OSError, "injected exchange failure"):
+                platform.write_selector(
+                    profile.layout,
+                    SRC / "plura_desktop/_runtime_entrypoint.py",
+                    SRC / "plura_desktop",
+                    executable,
+                )
+
+        self.assertEqual(platform.identity(profile.wrapper / "Contents"), contents_identity)
+        self.assertEqual(launcher.read_bytes(), before_launcher)
+        self.assertEqual(info.read_bytes(), before_info)
+        self.assertEqual(list(profile.wrapper.parent.glob(f".{profile.wrapper.name}.next-*")), [])
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
     def test_macos_standalone_runtime_selector_does_not_copy_python_package(self):
         fake_bundle = self.home / "ChatGPT-Standalone.app"
         executable = fake_bundle / "Contents/MacOS/ChatGPT"

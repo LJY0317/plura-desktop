@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -29,9 +30,28 @@ TOOL_LIFECYCLE_DIAGNOSTIC_RUST_LOG = (
     "codex_app_server::thread_state=debug,"
     "codex_core::session::world_state=trace"
 )
+RENAME_SWAP = 0x00000002
 
 
 class MacOSPlatform(DesktopPlatform):
+    @staticmethod
+    def _exchange_paths(left: Path, right: Path) -> None:
+        """Atomically exchange two existing paths on macOS.
+
+        The selector bundle's outer directory is a manifest-owned identity and must keep the same
+        inode across refreshes. Swapping only its ``Contents`` directory gives LaunchServices a
+        complete old-or-new bundle at all times while preserving that outer identity.
+        """
+        libc = ctypes.CDLL(None, use_errno=True)
+        renamex_np = getattr(libc, "renamex_np", None)
+        if renamex_np is None:
+            raise RuntimeError("Atomic macOS selector exchange is unavailable")
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        if renamex_np(os.fsencode(left), os.fsencode(right), RENAME_SWAP) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), f"{left} <-> {right}")
+
     @staticmethod
     def _command_has_exact_argument(command: str, argument: str) -> bool:
         """Match one exact argv-shaped token in `ps ... args=` output.
@@ -338,63 +358,103 @@ class MacOSPlatform(DesktopPlatform):
         icon = contents / "Resources" / icon_name
         if not icon.is_file():
             raise RuntimeError(f"Official ChatGPT icon missing: {icon}")
+
+        self.assert_safe_ancestry(layout.selector)
+        if (
+            self._is_linklike(layout.selector)
+            or not layout.selector.is_dir()
+            or not self.is_owned(layout.selector)
+        ):
+            raise RuntimeError(f"Managed selector is unsafe or replaced: {layout.selector}")
         self.ensure_no_mounts(layout.selector)
-        for child in list(layout.selector.iterdir()):
-            if child.is_symlink() or child.is_file():
-                child.unlink()
-            elif child.is_dir():
-                self.ensure_no_mounts(child)
-                shutil.rmtree(child)
-            else:
-                raise RuntimeError(f"Unexpected selector entry: {child}")
-        resources = layout.selector / "Contents/Resources"
-        macos = layout.selector / "Contents/MacOS"
-        resources.mkdir(parents=True, exist_ok=True)
-        macos.mkdir(exist_ok=True)
-        if runtime_executable is None:
-            shutil.copy2(entrypoint, resources / "plura_desktop_cli.py")
-            shutil.copytree(
-                package_dir,
-                resources / "plura_desktop",
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        live_contents = layout.selector / "Contents"
+        if live_contents.exists():
+            if (
+                self._is_linklike(live_contents)
+                or not live_contents.is_dir()
+                or not self.is_owned(live_contents)
+            ):
+                raise RuntimeError(f"Managed selector Contents is unsafe or replaced: {live_contents}")
+            self.ensure_no_mounts(live_contents)
+
+        staging_root = Path(
+            tempfile.mkdtemp(
+                prefix=f".{layout.selector.name}.next-",
+                dir=layout.selector.parent,
             )
-        shutil.copy2(icon, resources / "icon.icns")
-        if runtime_executable is None:
-            command = f'{shlex.quote(sys.executable)} "$(dirname "$0")/../Resources/plura_desktop_cli.py"'
-            launch = f'exec {command} launch-target --target {layout.identifier} --renderer-cdp'
-        else:
-            if not runtime_executable.is_file():
-                raise RuntimeError(f"Standalone Plura runtime executable is missing: {runtime_executable}")
-            command = shlex.quote(str(runtime_executable))
-            stable = shlex.quote(str(runtime_executable))
-            launch = (
-                f'{STABLE_FROZEN_RUNTIME_ENV}={stable} exec {command} '
-                f'launch-target --target {layout.identifier} --renderer-cdp'
-            )
-        launcher = (
-            "#!/bin/sh\n"
-            "set -eu\n"
-            f"{launch}\n"
         )
-        launcher_path = macos / "launcher"
-        launcher_path.write_text(launcher, encoding="utf-8")
-        launcher_path.chmod(0o755)
-        info = {
-            "CFBundleIdentifier": layout.identifier,
-            "CFBundleDisplayName": layout.display_name,
-            "CFBundleName": layout.display_name,
-            "CFBundleExecutable": "launcher",
-            "CFBundleIconFile": "icon.icns",
-            "CFBundlePackageType": "APPL",
-            "CFBundleVersion": __version__,
-            "CFBundleShortVersionString": __version__,
-            "LSUIElement": True,
-        }
-        with (layout.selector / "Contents/Info.plist").open("wb") as file:
-            plistlib.dump(info, file)
-        plutil = Path("/usr/bin/plutil")
-        if plutil.is_file():
-            subprocess.run([str(plutil), "-lint", str(layout.selector / "Contents/Info.plist")], check=True)
+        staging_contents = staging_root / "Contents"
+        try:
+            resources = staging_contents / "Resources"
+            macos = staging_contents / "MacOS"
+            resources.mkdir(parents=True)
+            macos.mkdir()
+            if runtime_executable is None:
+                # Build the replacement before touching the live bundle. In source/package mode
+                # these inputs can themselves live inside the current selector, so deleting the
+                # current Contents first makes a self-refresh destroy its own copy source.
+                shutil.copy2(entrypoint, resources / "plura_desktop_cli.py")
+                shutil.copytree(
+                    package_dir,
+                    resources / "plura_desktop",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                )
+            shutil.copy2(icon, resources / "icon.icns")
+            if runtime_executable is None:
+                command = f'{shlex.quote(sys.executable)} "$(dirname "$0")/../Resources/plura_desktop_cli.py"'
+                launch = f'exec {command} launch-target --target {layout.identifier} --renderer-cdp'
+            else:
+                if not runtime_executable.is_file():
+                    raise RuntimeError(f"Standalone Plura runtime executable is missing: {runtime_executable}")
+                command = shlex.quote(str(runtime_executable))
+                stable = shlex.quote(str(runtime_executable))
+                launch = (
+                    f'{STABLE_FROZEN_RUNTIME_ENV}={stable} exec {command} '
+                    f'launch-target --target {layout.identifier} --renderer-cdp'
+                )
+            launcher = (
+                "#!/bin/sh\n"
+                "set -eu\n"
+                f"{launch}\n"
+            )
+            launcher_path = macos / "launcher"
+            launcher_path.write_text(launcher, encoding="utf-8")
+            launcher_path.chmod(0o755)
+            info = {
+                "CFBundleIdentifier": layout.identifier,
+                "CFBundleDisplayName": layout.display_name,
+                "CFBundleName": layout.display_name,
+                "CFBundleExecutable": "launcher",
+                "CFBundleIconFile": "icon.icns",
+                "CFBundlePackageType": "APPL",
+                "CFBundleVersion": __version__,
+                "CFBundleShortVersionString": __version__,
+                "LSUIElement": True,
+            }
+            staged_info = staging_contents / "Info.plist"
+            with staged_info.open("wb") as file:
+                plistlib.dump(info, file)
+            plutil = Path("/usr/bin/plutil")
+            if plutil.is_file():
+                subprocess.run([str(plutil), "-lint", str(staged_info)], check=True)
+
+            if live_contents.exists():
+                self._exchange_paths(live_contents, staging_contents)
+            else:
+                staging_contents.rename(live_contents)
+        finally:
+            if staging_root.exists():
+                # After a successful exchange this removes the old Contents tree now parked at
+                # the staging path. Before an exchange it removes only the incomplete candidate.
+                self.ensure_no_mounts(staging_root)
+                shutil.rmtree(staging_root)
+
+        if not (
+            (live_contents / "MacOS/launcher").is_file()
+            and (live_contents / "Resources/icon.icns").is_file()
+            and (live_contents / "Info.plist").is_file()
+        ):
+            raise RuntimeError("Managed selector validation failed after atomic refresh")
 
     def running(self, layout: ProfileLayout) -> list[int]:
         try:
