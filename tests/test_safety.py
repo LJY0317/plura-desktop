@@ -48,6 +48,7 @@ from plura_desktop.platforms.linux import LinuxPlatform
 from plura_desktop.platforms.macos import MacOSPlatform
 from plura_desktop.platforms.windows import WindowsPlatform
 from plura_desktop.routing import ResponsesRoute
+from plura_desktop.model_list_overlay import ModelListOverlay
 from plura_desktop.cli import main as cli_main
 
 
@@ -467,6 +468,7 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(managed["backendPolicy"], "single-authoritative-profile-runtime")
         self.assertTrue(managed["sharedAppServerSupported"])
         self.assertTrue(managed["responsesRouteSupported"])
+        self.assertTrue(managed["modelListOverlaySupported"])
         self.assertTrue(managed["rendererCDPSupported"])
         self.assertEqual(managed["sessionState"], "available")
         self.assertEqual(managed["rendererCDPState"], "available")
@@ -670,6 +672,72 @@ class SafetyTests(unittest.TestCase):
             route.fingerprint,
         )
 
+    def test_launch_target_passes_only_secret_free_model_list_overlay_metadata(self):
+        self.profile.install()
+        overlay = ModelListOverlay.create(
+            "http://127.0.0.1:18741/v1/app-server-model-list",
+            "CHATGPT_TELA_RUNTIME_TOKEN",
+            "secret-value" * 4,
+        )
+        session = TargetSession(
+            self.profile.identifier,
+            "ws://127.0.0.1:18762",
+            11,
+            12,
+            13,
+            model_list_overlay_fingerprint=overlay.fingerprint,
+        )
+        with patch.dict(os.environ, {"CHATGPT_TELA_RUNTIME_TOKEN": "secret-value" * 4}, clear=False), patch(
+            "plura_desktop.manager._start_detached"
+        ) as start, patch(
+            "plura_desktop.manager._wait_for_session", return_value=session
+        ) as wait:
+            result = launch_target(
+                self.platform,
+                self.profile.identifier,
+                model_list_overlay=overlay,
+            )
+        self.assertEqual(result, session)
+        command = start.call_args.args[0]
+        self.assertIn("--model-list-overlay-url", command)
+        self.assertIn(overlay.url, command)
+        self.assertIn("--model-list-overlay-env-key", command)
+        self.assertIn(overlay.env_key, command)
+        self.assertNotIn("secret-value", " ".join(command))
+        self.assertEqual(
+            wait.call_args.kwargs["expected_model_list_overlay_fingerprint"],
+            overlay.fingerprint,
+        )
+
+    def test_launch_target_refuses_to_rebind_a_live_different_model_list_overlay(self):
+        self.profile.install()
+        current = ModelListOverlay.create(
+            "http://127.0.0.1:18741/v1/app-server-model-list",
+            "FIRST_TOKEN",
+            "a" * 48,
+        )
+        requested = ModelListOverlay.create(
+            "http://127.0.0.1:18742/v1/app-server-model-list",
+            "SECOND_TOKEN",
+            "b" * 48,
+        )
+        session = TargetSession(
+            self.profile.identifier,
+            "ws://127.0.0.1:18762",
+            os.getpid(),
+            os.getpid(),
+            os.getpid(),
+            model_list_overlay_fingerprint=current.fingerprint,
+        )
+        atomic_write_session(descriptor_path(self.profile.meta, self.profile.identifier), session)
+        with patch("plura_desktop.runtime.endpoint_ready", return_value=True):
+            with self.assertRaisesRegex(RuntimeError, "different model-list overlay"):
+                launch_target(
+                    self.platform,
+                    self.profile.identifier,
+                    model_list_overlay=requested,
+                )
+
     def test_launch_target_refuses_to_rebind_a_live_different_responses_route(self):
         self.profile.install()
         current = ResponsesRoute.create("http://127.0.0.1:18741/v1", "FIRST_TOKEN", "a" * 48)
@@ -768,6 +836,30 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(value["responsesRouteFingerprint"], route.fingerprint)
         self.assertNotIn(route.base_url, rendered)
         self.assertNotIn(route.env_key, rendered)
+
+    def test_target_session_exposes_model_list_overlay_fingerprint_but_not_callback_or_secret(self):
+        self.profile.install()
+        overlay = ModelListOverlay.create(
+            "http://127.0.0.1:18741/v1/app-server-model-list",
+            "CHATGPT_TELA_RUNTIME_TOKEN",
+            "s" * 48,
+        )
+        path = descriptor_path(self.profile.meta, self.profile.identifier)
+        session = TargetSession(
+            self.profile.identifier,
+            "ws://127.0.0.1:18762",
+            os.getpid(),
+            os.getpid(),
+            os.getpid(),
+            model_list_overlay_fingerprint=overlay.fingerprint,
+        )
+        atomic_write_session(path, session)
+        with patch("plura_desktop.runtime.endpoint_ready", return_value=True):
+            value = target_session(self.platform, self.profile.identifier)
+        rendered = json.dumps(value)
+        self.assertEqual(value["modelListOverlayFingerprint"], overlay.fingerprint)
+        self.assertNotIn(overlay.url, rendered)
+        self.assertNotIn(overlay.env_key, rendered)
 
     def test_quit_target_requests_normal_quit_for_exact_desktop_identity(self):
         self.profile.install()
@@ -897,6 +989,30 @@ class SafetyTests(unittest.TestCase):
         )
         self.assertNotEqual(first.fingerprint, second.fingerprint)
 
+    def test_composite_responses_route_keeps_first_party_auth_and_local_capability_separate(self):
+        legacy = ResponsesRoute.create(
+            "http://127.0.0.1:18741/v1", "LOCAL_TOKEN", "s" * 48,
+        )
+        route = ResponsesRoute.create(
+            "http://127.0.0.1:18741/v1", "LOCAL_TOKEN", "s" * 48,
+            runtime_header_name="X-Local-Runtime-Token",
+        )
+        self.assertNotEqual(route.fingerprint, legacy.fingerprint)
+        provider = route.thread_config_overlay()["model_providers"][route.provider_id]
+        self.assertEqual(provider["env_http_headers"], {"X-Local-Runtime-Token": "LOCAL_TOKEN"})
+        self.assertTrue(provider["requires_openai_auth"])
+        self.assertEqual(provider["model_catalog_url"], "http://127.0.0.1:18741/v1/models")
+        self.assertNotIn("env_key", provider)
+        arguments = " ".join(route.codex_config_args())
+        self.assertIn("requires_openai_auth=true", arguments)
+        self.assertIn('env_http_headers."X-Local-Runtime-Token"="LOCAL_TOKEN"', arguments)
+        self.assertNotIn("s" * 48, arguments)
+        with self.assertRaisesRegex(ValueError, "must not replace"):
+            ResponsesRoute.create(
+                "http://127.0.0.1:18741/v1", "LOCAL_TOKEN", "s" * 48,
+                runtime_header_name="Authorization",
+            )
+
     def test_run_app_server_routes_with_config_overrides_and_never_places_secret_on_argv(self):
         route = ResponsesRoute.create(
             "http://127.0.0.1:18741/v1",
@@ -945,10 +1061,11 @@ class SafetyTests(unittest.TestCase):
         class FakeProxy:
             instance = None
 
-            def __init__(self, listen_url, upstream_url, configured_route):
+            def __init__(self, listen_url, upstream_url, configured_route, model_list_overlay=None):
                 self.listen_url = listen_url
                 self.upstream_url = upstream_url
                 self.route = configured_route
+                self.model_list_overlay = model_list_overlay
                 self.fatal_error = None
                 self.is_alive = True
                 self.started = False

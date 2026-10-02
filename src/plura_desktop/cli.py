@@ -17,6 +17,7 @@ from .manager import (
     supervise_target,
     target_session,
 )
+from .model_list_overlay import ModelListOverlay
 from .platforms import current_platform
 from .routing import ResponsesRoute
 from .version import __version__
@@ -93,6 +94,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--responses-runtime-header-name",
+        help=(
+            "Optional local capability header for a composite Responses provider. "
+            "Keeps first-party Codex authorization separate from the named environment secret."
+        ),
+    )
+    parser.add_argument(
+        "--model-list-overlay-url",
+        help=(
+            "Optional loopback http:// callback that may transform app-server model/list results. "
+            "Requires --model-list-overlay-env-key. Callback failure preserves the Native result."
+        ),
+    )
+    parser.add_argument(
+        "--model-list-overlay-env-key",
+        help=(
+            "Environment variable containing the model-list overlay bearer secret. "
+            "The secret value is inherited, never placed on the command line."
+        ),
+    )
+    parser.add_argument(
         "--app",
         help=(
             "ChatGPT executable path. macOS has a canonical default; Windows/Linux "
@@ -118,7 +140,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         responses_route = None
-        if args.responses_base_url is not None or args.responses_env_key is not None:
+        if (args.responses_base_url is not None or args.responses_env_key is not None
+                or args.responses_runtime_header_name is not None):
             if not args.responses_base_url or not args.responses_env_key:
                 raise ValueError("Responses routing requires both --responses-base-url and --responses-env-key")
             credential = os.environ.get(args.responses_env_key)
@@ -130,6 +153,24 @@ def main(argv: list[str] | None = None) -> int:
                 args.responses_base_url,
                 args.responses_env_key,
                 credential,
+                runtime_header_name=args.responses_runtime_header_name,
+            )
+        model_list_overlay = None
+        if args.model_list_overlay_url is not None or args.model_list_overlay_env_key is not None:
+            if not args.model_list_overlay_url or not args.model_list_overlay_env_key:
+                raise ValueError(
+                    "Model-list overlay requires both --model-list-overlay-url and --model-list-overlay-env-key"
+                )
+            overlay_credential = os.environ.get(args.model_list_overlay_env_key)
+            if overlay_credential is None:
+                raise ValueError(
+                    "Model-list overlay credential environment variable is missing: "
+                    f"{args.model_list_overlay_env_key}"
+                )
+            model_list_overlay = ModelListOverlay.create(
+                args.model_list_overlay_url,
+                args.model_list_overlay_env_key,
+                overlay_credential,
             )
         platform = current_platform(app_override=args.app)
         if args.command == "targets":
@@ -149,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
                 platform,
                 args.target,
                 responses_route=responses_route,
+                model_list_overlay=model_list_overlay,
                 renderer_cdp=args.renderer_cdp,
             )
             if args.json:
@@ -194,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
                 platform,
                 args.target,
                 responses_route=responses_route,
+                model_list_overlay=model_list_overlay,
                 renderer_cdp=args.renderer_cdp,
             )
 

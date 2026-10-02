@@ -332,6 +332,20 @@ When a Responses route is active, the supervisor keeps the Codex app-server on a
 
 With `--json`, `launch-target` returns the same public ready-session shape as `target-session --json`. Controllers can therefore obtain the canonical loopback app-server endpoint and route fingerprint without reading launcher metadata or private profile paths.
 
+An optional companion can project additional choices into the Desktop `model/list` result through
+`--model-list-overlay-url http://127.0.0.1:PORT/PATH` and
+`--model-list-overlay-env-key ENV_KEY`. The callback receives a versioned JSON request containing
+the Native result and returns a versioned JSON result; its bearer secret stays in the named
+environment variable. Plura retains the Native result if the callback is unavailable or invalid.
+`targets --json` reports `modelListOverlaySupported`, and a ready session reports only
+`modelListOverlayFingerprint`. An already running target with a different overlay must be quit
+normally before relaunch.
+
+A companion that handles both first-party Native requests and its own Web models can also pass
+`--responses-runtime-header-name HEADER` with the Responses route. Plura then keeps the official
+Codex bearer authorization on requests and sends the companion's environment secret in `HEADER`.
+The ordinary `--responses-env-key` bearer route remains the default when this option is absent.
+
 Controllers that need to inspect the official Desktop renderer can opt in to a Chromium DevTools endpoint at launch:
 
 ```sh
@@ -353,7 +367,7 @@ plura-desktop target-session --target TARGET_ID --json
 
 The endpoint is dynamic and local-only. Plura Desktop owns its lifetime; remote/bridge projects attach to it and never create their own fallback app-server.
 
-When a launch-time Responses route is active, `target-session --json` adds only `responsesRouteFingerprint`. When renderer CDP was explicitly enabled at launch, it adds only the loopback `rendererCDPEndpoint`. It does not expose the route URL, environment-variable name/value, `CODEX_HOME`, Desktop user-data path, authentication state, or profile data paths. If a Desktop target is already running outside the canonical runtime, `state` remains `restart-required`, but platforms that can prove the exact top-level Desktop process may also expose `desktopProcessID` so a controller can foreground that existing app without claiming runtime ownership.
+When a launch-time Responses route or model-list overlay is active, `target-session --json` adds only their fingerprints. When renderer CDP was explicitly enabled at launch, it adds only the loopback `rendererCDPEndpoint`. It does not expose the route URL, environment-variable name/value, `CODEX_HOME`, Desktop user-data path, authentication state, or profile data paths. If a Desktop target is already running outside the canonical runtime, `state` remains `restart-required`, but platforms that can prove the exact top-level Desktop process may also expose `desktopProcessID` so a controller can foreground that existing app without claiming runtime ownership.
 
 ### Refresh
 

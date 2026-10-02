@@ -19,8 +19,11 @@ from plura_desktop.app_server_proxy import (  # noqa: E402
     _WebSocketPeer,
     _read_http_head,
     _websocket_accept,
+    model_list_request_key,
+    overlay_model_list_response,
     rewrite_app_server_request,
 )
+from plura_desktop.model_list_overlay import ModelListOverlayError  # noqa: E402
 from plura_desktop.routing import ResponsesRoute  # noqa: E402
 
 
@@ -99,6 +102,30 @@ class AppServerProxyTests(unittest.TestCase):
                 '{"method":"thread/start","params":{"config":"invalid"}}',
                 self.route,
             )
+
+    def test_model_list_overlay_tracks_exact_rpc_id_and_preserves_native_on_callback_failure(self) -> None:
+        class Overlay:
+            def apply(self, result):
+                return {**result, "data": [*result["data"], {"id": "web"}]}
+
+        source = '{"id":7,"method":"model/list","params":{"limit":20}}'
+        key = model_list_request_key(source)
+        self.assertEqual(key, "7")
+        pending = {key}
+        native = '{"id":7,"result":{"data":[{"id":"native"}]}}'
+        projected = json.loads(overlay_model_list_response(native, pending, Overlay()))
+        self.assertEqual(projected["result"]["data"], [{"id": "native"}, {"id": "web"}])
+        self.assertEqual(pending, set())
+
+        class FailingOverlay:
+            def apply(self, _result):
+                raise ModelListOverlayError("fixture unavailable")
+
+        pending = {"7"}
+        self.assertEqual(overlay_model_list_response(native, pending, FailingOverlay()), native)
+        self.assertEqual(pending, set())
+        self.assertIsNone(model_list_request_key('{"id":7,"method":"thread/start"}'))
+        self.assertIsNone(model_list_request_key('{"method":"model/list"}'))
         with self.assertRaisesRegex(AppServerProxyError, "non-object model_providers"):
             rewrite_app_server_request(
                 '{"method":"thread/start","params":{"config":{"model_providers":[]}}}',
