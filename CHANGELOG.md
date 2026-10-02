@@ -4,6 +4,8 @@ All notable public changes to Plura Desktop will be documented here from the fir
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-10-02
+
 - Make macOS managed-profile selector refresh transactional: build and validate a complete replacement `Contents` tree before atomically exchanging it with the live selector, preserving the selector app and its manifest-owned identity if preparation fails.
 - Fix source/package selector self-refresh when the running selector's copied Plura runtime is also the source for the replacement; refresh no longer deletes its own source files before copying them.
 - Make the official/default ChatGPT installation the sole application-update authority: a stopped managed profile automatically follows a changed official app on its next cold launch, while a managed clone changed independently is discarded and rebuilt from the official app without replacing profile state.
