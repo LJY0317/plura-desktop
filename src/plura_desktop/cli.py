@@ -9,11 +9,9 @@ import sys
 from .domain import DEFAULT_MANAGED_PROFILE_INDEX
 from .manager import (
     Profile,
-    _launch_target_attached,
     launch_target,
     quit_target,
     public_targets,
-    serve_target,
     supervise_target,
     target_session,
 )
@@ -38,8 +36,6 @@ PUBLIC_COMMANDS = (
     "diagnostics-status",
 )
 INTERNAL_COMMANDS = (
-    "_serve-target",
-    "_launch-target-attached",
     "_supervise-target",
 )
 
@@ -66,19 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Managed profile index (2-99; default: 2)",
     )
     parser.add_argument("--target", help="Target ID from targets --json")
-    parser.add_argument(
-        "--app-server-url",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--renderer-cdp-port",
-        type=int,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--listen",
-        help=argparse.SUPPRESS,
-    )
+    parser.add_argument("--expected-desktop-pid", type=int,
+                        help="For quit-target, require the exact Desktop PID observed before confirmation")
     parser.add_argument(
         "--responses-base-url",
         help=(
@@ -94,6 +79,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--responses-runtime-header-name", help="Optional provider header sourced from the Responses credential environment key")
+    parser.add_argument("--startup-model-catalog", action="store_true", help="Build a launch-scoped catalog through the model overlay")
+    parser.add_argument("--model-catalog-json", help="Optional startup model catalog for an explicit Responses route")
     parser.add_argument("--model-list-overlay-url", help="Optional loopback model-list callback for a routed target")
     parser.add_argument("--model-list-overlay-env-key", help="Environment key containing the model-list callback token")
     parser.add_argument(
@@ -135,8 +122,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.responses_env_key,
                 credential,
                 args.responses_runtime_header_name,
+                args.model_catalog_json,
             )
-        elif args.responses_runtime_header_name is not None:
+        elif args.responses_runtime_header_name is not None or args.model_catalog_json is not None:
             raise ValueError("Responses runtime header requires a Responses route")
         model_list_overlay = None
         if args.model_list_overlay_url is not None or args.model_list_overlay_env_key is not None:
@@ -167,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.target,
                 responses_route=responses_route,
                 model_list_overlay=model_list_overlay,
+                startup_model_catalog=args.startup_model_catalog,
                 renderer_cdp=args.renderer_cdp,
             )
             if args.json:
@@ -184,26 +173,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "quit-target":
             if not args.target:
                 raise ValueError("quit-target requires --target")
-            value = quit_target(platform, args.target)
+            value = quit_target(platform, args.target, **({"expected_desktop_pid": args.expected_desktop_pid}
+                                if args.expected_desktop_pid is not None else {}))
             if args.json:
                 print(json.dumps(value, indent=2, sort_keys=True))
             else:
                 print(f"{value['targetID']}: {value['state']}")
-            return 0
-        if args.command == "_serve-target":
-            if not args.target or not args.listen:
-                raise ValueError("_serve-target requires --target and --listen")
-            serve_target(platform, args.target, args.listen, responses_route=responses_route)
-            return 0
-        if args.command == "_launch-target-attached":
-            if not args.target or not args.app_server_url:
-                raise ValueError("_launch-target-attached requires --target and --app-server-url")
-            _launch_target_attached(
-                platform,
-                args.target,
-                args.app_server_url,
-                renderer_cdp_port=args.renderer_cdp_port,
-            )
             return 0
         if args.command == "_supervise-target":
             if not args.target:
@@ -213,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.target,
                 responses_route=responses_route,
                 model_list_overlay=model_list_overlay,
+                startup_model_catalog=args.startup_model_catalog,
                 renderer_cdp=args.renderer_cdp,
             )
 

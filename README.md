@@ -7,6 +7,10 @@
 The project now has a shared profile/domain lifecycle with platform adapters for **macOS, Windows, and Linux**. The official/default ChatGPT profile remains outside this project's ownership. Managed profiles start at Profile 2 and isolate `CODEX_HOME` plus the desktop user-data directory.
 
 For the distinction between **independent local profiles**, sequential account switching, mobile Remote continuity and the still-unavailable **simultaneous cross-account sharing of one original thread**, see [profile continuity and sharing boundaries](docs/PROFILE_CONTINUITY_AND_THREAD_SHARING.ko.md). A read-only macOS metadata-only storage separation audit is included at `scripts/diagnose_local_conversation_isolation.py`.
+Plura Desktop does not require Tela. Tela integration is optional: it can supply a
+caller-owned Web route or engine for a connected session. Disconnect that session before
+removing the integration; subsequent ordinary Plura launches use the official runtime.
+Tela removal does not own or remove Plura profiles, login data, or launchers.
 
 `Plura Desktop` is the product name. ChatGPT and Codex describe the upstream products it integrates with rather than this project's brand identity.
 
@@ -298,6 +302,8 @@ The first managed launch starts with empty isolated state. Do not copy authentic
 
 For a first managed profile, the intended lifecycle is: run `status --profile 2` (expect `not-installed`), run `install --profile 2`, run `launch --profile 2`, sign in normally in the new ChatGPT Profile 2 window, quit it normally once, then use `status`, diagnostics as needed, `refresh` after package updates, and `uninstall` first as a dry run before applying `--yes`. No step requires copying an existing ChatGPT/Codex profile database.
 
+Managed profiles stay open when their launcher shell disconnects. Each profile supervisor owns its Desktop and app-server separately, and an explicit supervisor termination cleans up both. Normal profile quit continues to follow the Desktop lifecycle.
+
 ### Stable target contract
 
 External tools should use the installed control CLI and versioned target contract instead of reconstructing selector paths, `CODEX_HOME`, ports, or profile numbering rules. On macOS/Linux the control CLI lives in the platform metadata directory as `plura-desktop`; Windows installs `plura-desktop.cmd` there.
@@ -375,6 +381,8 @@ Refresh preserves the profile state directories and their recorded identities.
 
 The profile-scoped structural Rust trace remains opt-in and adds no background work:
 
+Permission diagnostics also record bounded, permission-only RPC classifications after the next normal launch. They work without a Tela route and never change selected permissions or record prompts, paths, credentials, request IDs or custom profile names. Thread identifiers are hashed; at most 64 events per connection use the existing private incident retention.
+
 ```sh
 plura-desktop diagnostics-on --profile 2
 plura-desktop diagnostics-status --profile 2
@@ -382,6 +390,10 @@ plura-desktop diagnostics-off --profile 2
 ```
 
 The trace setting is stored in the profile manifest and takes effect on the next normal launch. It never accepts arbitrary log filters from the manifest.
+
+When an active app-server proxy fails, it records one structural transport incident under owned metadata at `diagnostics/runtime/<target-hash>/incidents/`. It records the direction, failure category and message byte counters, never payloads, credentials or conversation content. Healthy traffic produces no incident and no background sampler runs. Each target retains at most 10 summaries of at most 256 KiB each. Final managed-profile removal validates and removes this shared runtime evidence; socket delivery counters do not prove that Desktop rendered a response.
+
+`diagnostics-status` also summarizes the latest retained permission resume: whether the request explicitly supplied permissions, whether forwarding changed their classifications, and what Native reported. This is diagnostic evidence, not a test of effective execution permissions. Missing or truncated evidence is labeled; identifiers and custom permission names are never displayed.
 
 The packaged `plura-desktop-diagnose` command is **explicitly macOS-specific** because it consumes the currently documented/observed macOS Desktop log boundary. It is on-demand and read-only. It may query only the allowlisted structural targets in `CODEX_HOME/logs_2.sqlite`; it never opens authentication/profile/state databases or emits prompts, results, private MCP names, raw conversation/thread IDs, or private paths.
 

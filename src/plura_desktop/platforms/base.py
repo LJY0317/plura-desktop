@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
+from dataclasses import dataclass, field
 import hashlib
 import os
 from pathlib import Path
@@ -14,9 +15,27 @@ from typing import Any
 
 from ..domain import ManagedPath, ProfileLayout, profile_identifier, validate_profile_index
 from ..routing import ResponsesRoute
+from ..engine import codex_engine_override
 
 
 STABLE_FROZEN_RUNTIME_ENV = "PLURA_DESKTOP_STABLE_RUNTIME"
+
+
+@dataclass(frozen=True)
+class AppServerLaunch:
+    """Ephemeral verified command; credentials stay off argv and representations."""
+
+    command: tuple[str, ...]
+    environment: dict[str, str] = field(repr=False)
+
+
+@dataclass(frozen=True)
+class DesktopLaunch:
+    """Same-launch OS command; never a persistent proof or credential cache."""
+
+    command: tuple[str, ...]
+    environment: dict[str, str] = field(repr=False)
+    cwd: Path
 
 
 class DesktopPlatform(ABC):
@@ -84,6 +103,28 @@ class DesktopPlatform(ABC):
     ) -> None:
         raise NotImplementedError
 
+    def desktop_launch_spec(
+        self, executable: Path, *, layout: ProfileLayout | None,
+        app_server_url: str, rust_log: str | None = None,
+        renderer_cdp_port: int | None = None,
+    ) -> DesktopLaunch:
+        """Build a direct-exec command for an already verified executable."""
+        if self.platform_id not in {"linux", "windows"}:
+            raise RuntimeError(f"Direct desktop launch is unsupported on {self.platform_id}")
+        if layout is None:
+            env = dict(os.environ)
+            env["USERPROFILE" if self.platform_id == "windows" else "HOME"] = str(self.home)
+            env["CODEX_HOME"] = str(self.default_codex_home())
+            env["CODEX_ELECTRON_USER_DATA_PATH"] = str(self.default_user_data())
+            command = [str(executable), "--user-data-dir=" + str(self.default_user_data())]
+        else:
+            env = self.sanitized_environment(layout)
+            command = self.process_command(executable, layout)
+        if rust_log:
+            env["RUST_LOG"] = rust_log
+        env["CODEX_APP_SERVER_WS_URL"] = app_server_url
+        return DesktopLaunch(tuple(command + self.renderer_cdp_args(renderer_cdp_port)), env, self.home)
+
     def desktop_process_id(self, executable: Path) -> int | None:
         """Return the top-level desktop process for one exact app executable when observable.
 
@@ -92,6 +133,12 @@ class DesktopPlatform(ABC):
         ownership or converts that process into a canonical session.
         """
         return None
+
+    def supervised_desktop_pid(
+        self, executable: Path, launcher: subprocess.Popen, *, deadline: float
+    ) -> int:
+        """Bind a launched desktop's identity; direct-exec platforms retain the child PID."""
+        return launcher.pid
 
     def request_desktop_quit(self, executable: Path, desktop_pid: int) -> None:
         """Ask one exact desktop process to quit through the platform's normal application lifecycle.
@@ -114,11 +161,9 @@ class DesktopPlatform(ABC):
         return self.home / ".codex"
 
     def resolve_codex_executable(self, chatgpt_executable: Path) -> Path:
-        override = os.environ.get("CODEX_EXECUTABLE")
-        if override:
-            candidate = Path(override).expanduser().resolve()
-            if candidate.is_file():
-                return candidate
+        override = codex_engine_override()
+        if override is not None:
+            return override[0]
         for name in ("codex", "codex.exe"):
             found = shutil.which(name)
             if found:
@@ -127,15 +172,17 @@ class DesktopPlatform(ABC):
             "Codex executable not found. Set CODEX_EXECUTABLE to the official bundled Codex executable."
         )
 
-    def run_app_server(
+    def app_server_launch(
         self,
         codex_home: Path,
         listen_url: str,
         *,
+        chatgpt_executable: Path,
         responses_route: ResponsesRoute | None = None,
-    ) -> None:
-        chatgpt = self.resolve_executable()
-        codex = self.resolve_codex_executable(chatgpt)
+    ) -> AppServerLaunch:
+        # Resolve and verify in the owner immediately before its direct Popen; no
+        # intermediary interpreter, cached identity or second profile discovery.
+        codex = self.resolve_codex_executable(chatgpt_executable)
         env = dict(os.environ)
         env["CODEX_HOME"] = str(codex_home)
         if responses_route is not None and not env.get(responses_route.env_key):
@@ -163,7 +210,7 @@ class DesktopPlatform(ABC):
         ]
         if responses_route is not None:
             command[2:2] = responses_route.codex_config_args()
-        os.execve(str(codex), command, env)
+        return AppServerLaunch(tuple(command), env)
 
     def show_launch_error(self, layout: ProfileLayout, error: Exception) -> None:
         print(f"{layout.display_name} launch failed: {error}", file=os.sys.stderr)
@@ -178,16 +225,16 @@ class DesktopPlatform(ABC):
         *,
         source_fingerprint: dict[str, str],
         profile_running: bool,
-    ) -> bool:
-        """Prepare any platform-specific derived desktop runtime.
+    ) -> Path:
+        """Prepare and return the verified platform-specific desktop executable.
 
         Generic platforms launch the recorded executable directly. macOS overrides this to keep a
         byte-identical signed runtime bundle at a distinct application URL so LaunchServices can
         distinguish managed profiles from the official default ChatGPT application.
-        Return True only when derived runtime bytes were replaced. The caller
-        can then emit one abnormal-reconciliation diagnostic receipt.
+        The resulting executable Path is not a Boolean rebuild indicator.
+        Lifecycle diagnostics must independently observe reconciliation.
         """
-        return False
+        return self.profile_executable(layout, executable, source_fingerprint=source_fingerprint)
 
     def profile_executable(
         self,
@@ -226,6 +273,14 @@ class DesktopPlatform(ABC):
     def managed_runtime_health(self, layout: ProfileLayout) -> str:
         """Read-only derived-app integrity; not a signature/credential check."""
         return "unknown"
+
+    def runtime_generation(self, layout: ProfileLayout) -> tuple[int, int] | None:
+        """Cheap, advisory generation of derived code, never user data.
+
+        This is strictly diagnostic evidence; callers must still use the
+        platform's signed runtime verification to authorize execution.
+        """
+        return None
 
     def update_guard(self, layout: ProfileLayout):
         """Scope update/launcher writes to one physical writer.

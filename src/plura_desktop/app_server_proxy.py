@@ -7,11 +7,15 @@ import os
 import socket
 import struct
 import threading
-from typing import Any
+import time
+from datetime import datetime, timezone
+from uuid import uuid4
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from .routing import ResponsesRoute
 from .model_list_overlay import ModelListOverlay
+from .permission_diagnostics import PermissionDiagnostics
 
 
 _WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -60,7 +64,13 @@ class AppServerProxyError(RuntimeError):
     pass
 
 
-def rewrite_app_server_request(message: str, route: ResponsesRoute) -> str:
+class AppServerMessageLimitError(AppServerProxyError):
+    def __init__(self, received_bytes: int):
+        super().__init__("websocket message exceeds proxy limit")
+        self.received_bytes = received_bytes
+
+
+def rewrite_app_server_request(message: str, route: ResponsesRoute, *, permission_profiles: bool = False) -> str:
     """Overlay one Responses route on thread lifecycle requests only.
 
     Unrelated JSON-RPC messages are returned byte-for-byte. The route overlay is secret-free: the
@@ -94,6 +104,15 @@ def rewrite_app_server_request(message: str, route: ResponsesRoute) -> str:
     routed_params = dict(params)
     routed_params["config"] = config
     routed_params["modelProvider"] = route.provider_id
+    # Only exact built-ins independent of custom legacy writable roots are safe to normalize.
+    # Native persists profile identity across cold resume; :workspace can drop custom roots.
+    if permission_profiles and params.get("permissions") is None:
+        profile = {"read-only": ":read-only", "danger-full-access": ":danger-full-access"}.get(
+            params.get("sandbox") if isinstance(params.get("sandbox"), str) else ""
+        )
+        if profile:
+            routed_params.pop("sandbox", None)
+            routed_params["permissions"] = profile
     routed = dict(value)
     routed["params"] = routed_params
     return json.dumps(routed, ensure_ascii=False, separators=(",", ":"))
@@ -227,7 +246,7 @@ class _WebSocketPeer:
             parts.append(payload)
             total += len(payload)
             if total > _MAX_MESSAGE_BYTES:
-                raise AppServerProxyError("websocket message exceeds proxy limit")
+                raise AppServerMessageLimitError(total)
             if fin:
                 assert message_opcode is not None
                 return message_opcode, b"".join(parts)
@@ -275,11 +294,13 @@ def _connect_upstream(endpoint: str, requested_protocols: str | None) -> tuple[s
 class RoutePreservingAppServerProxy:
     """Loopback WebSocket proxy that preserves one launch-time Responses route per thread."""
 
-    def __init__(self, listen_url: str, upstream_url: str, route: ResponsesRoute, *, model_list_overlay: ModelListOverlay | None = None) -> None:
+    def __init__(self, listen_url: str, upstream_url: str, route: ResponsesRoute | None, *, model_list_overlay: ModelListOverlay | None = None, permission_diagnostics: Callable[[], PermissionDiagnostics] | None = None, transport_failure: Callable[[dict], None] | None = None) -> None:
         self.listen_url = listen_url
         self.upstream_url = upstream_url
         self.route = route
         self.model_list_overlay = model_list_overlay
+        self.permission_diagnostics = permission_diagnostics
+        self.transport_failure = transport_failure
         self._listener: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -405,31 +426,94 @@ class RoutePreservingAppServerProxy:
             done = threading.Event()
             pending_model_lists: set[str] = set()
             pending_lock = threading.Lock()
+            permission_profiles = False
+            connection = uuid4().hex
+            began = time.monotonic()
+            failure_lock = threading.Lock()
+            failure_reported = False
+            counters = {direction: {"receivedMessages": 0, "receivedBytes": 0, "deliveredMessages": 0,
+                        "deliveredBytes": 0, "largestMessageBytes": 0}
+                        for direction in ("client_to_server", "server_to_client")}
+
+            def report_failure(error: BaseException, direction: str) -> None:
+                nonlocal failure_reported
+                with failure_lock:
+                    if failure_reported or done.is_set() or self._stop.is_set() or self.transport_failure is None:
+                        return
+                    failure_reported = True
+                    reason = ("message_limit" if isinstance(error, AppServerMessageLimitError) else
+                              "protocol_error" if isinstance(error, AppServerProxyError) else
+                              "invalid_text" if isinstance(error, UnicodeDecodeError) else
+                              "unexpected_eof" if isinstance(error, EOFError) else "transport_io_error")
+                    event = {"kind": "app-server-transport-failure", "version": 1,
+                             "at": datetime.now(timezone.utc).isoformat(), "connection": connection,
+                             "direction": direction, "reason": reason,
+                             "durationMs": round((time.monotonic() - began) * 1000),
+                             "messageLimitBytes": _MAX_MESSAGE_BYTES,
+                             "receivedMessageBytes": error.received_bytes if isinstance(error, AppServerMessageLimitError) else None,
+                             "counters": {key: dict(value) for key, value in counters.items()},
+                             "deliveryMeansSocketWriteOnly": True}
+                try:
+                    self.transport_failure(event)
+                except Exception:
+                    pass  # Optional evidence cannot alter the existing transport failure path.
+
+            try:
+                diagnostics = self.permission_diagnostics() if self.permission_diagnostics else None
+            except Exception:
+                diagnostics = None  # Optional observation must not affect transport.
 
             def pump(source: _WebSocketPeer, destination: _WebSocketPeer, *, rewrite: bool) -> None:
+                nonlocal permission_profiles
+                direction = "client_to_server" if rewrite else "server_to_client"
+                stats = counters[direction]
                 try:
                     while not done.is_set():
                         message = source.recv_message()
                         if message is None:
                             return
                         opcode, payload = message
+                        stats["receivedMessages"] += 1
+                        stats["receivedBytes"] += len(payload)
+                        stats["largestMessageBytes"] = max(stats["largestMessageBytes"], len(payload))
                         if opcode == 0x1 and rewrite:
                             text = payload.decode("utf-8")
+                            try:
+                                handshake = json.loads(text)
+                            except json.JSONDecodeError:
+                                handshake = None
+                            if isinstance(handshake, dict) and handshake.get("method") == "initialize":
+                                params = handshake.get("params")
+                                capabilities = params.get("capabilities") if isinstance(params, dict) else None
+                                permission_profiles = isinstance(capabilities, dict) and capabilities.get("experimentalApi") is True
                             if self.model_list_overlay is not None:
                                 identity = model_list_request_id(text)
                                 if identity is not None:
                                     with pending_lock:
                                         if len(pending_model_lists) < 128:
                                             pending_model_lists.add(identity)
-                            payload = rewrite_app_server_request(text, self.route).encode("utf-8")
-                        elif opcode == 0x1 and self.model_list_overlay is not None:
+                            forwarded = rewrite_app_server_request(text, self.route, permission_profiles=permission_profiles) if self.route else text
+                            if diagnostics is not None:
+                                diagnostics.observe(text, forwarded, experimental=permission_profiles)
+                            payload = forwarded.encode("utf-8")
+                        elif opcode == 0x1:
+                            if diagnostics is not None:
+                                diagnostics.observe(payload.decode("utf-8"))
+                            if self.model_list_overlay is None:
+                                destination.send_frame(opcode, payload)
+                                stats["deliveredMessages"] += 1
+                                stats["deliveredBytes"] += len(payload)
+                                continue
                             with pending_lock:
                                 text = overlay_model_list_response(
                                     payload.decode("utf-8"), pending_model_lists, self.model_list_overlay,
                                 )
                             payload = text.encode("utf-8")
                         destination.send_frame(opcode, payload)
-                except (EOFError, OSError, UnicodeDecodeError, AppServerProxyError):
+                        stats["deliveredMessages"] += 1
+                        stats["deliveredBytes"] += len(payload)
+                except (EOFError, OSError, UnicodeDecodeError, AppServerProxyError) as error:
+                    report_failure(error, direction)
                     return
                 finally:
                     done.set()

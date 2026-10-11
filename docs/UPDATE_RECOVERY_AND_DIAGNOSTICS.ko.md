@@ -66,6 +66,19 @@ plura-desktop diagnostics-status --profile 2
 `manifest_commit`, `runtime_spawn`,
 `runtime_session_wait` 등 내부 허용값으로 제한한다.
 
+원본 앱 업데이트를 따르는 준비 단계뿐 아니라 canonical
+`launch_runtime`과 `launch_supervisor` 실패도 분리한다.
+감독 과정에서는 `supervisor_managed_prepare`,
+`supervisor_backend_spawn`, `supervisor_backend_ready`,
+`supervisor_proxy_ready`, `supervisor_gui_spawn`,
+`supervisor_gui_identity`, `supervisor_renderer_ready`,
+`supervisor_session_commit` 등의 단계 이름만 보관한다.
+LaunchServices는 대기용 `open(1)` PID와 실제 GUI PID가
+다르므로, 원본 앱을 정상 종료할 때에는 **확인된 GUI PID와
+실행 파일의 정규 경로가 모두 일치할 때만** AppKit에 정상 종료를
+요청한다. GUI PID를 확인할 수 없으면 대기용 wrapper를 사용자
+앱으로 간주하여 종료하지 않는다.
+
 예외 *종류*, 제한된 `errno`, 단계별 상대 경과 시간,
 구조적 무결성 요약, 실행 중 여부, 재생성 여부만 담는다.
 **원문 예외 메시지, 절대 사용자 경로, 실행 인수, 토큰·계정,

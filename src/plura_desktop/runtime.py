@@ -22,6 +22,7 @@ class TargetSession:
     responses_route_fingerprint: str | None = None
     model_list_overlay_fingerprint: str | None = None
     renderer_cdp_endpoint: str | None = None
+    engine_override_sha256: str | None = None
 
 
 def valid_renderer_cdp_endpoint(value: str | None) -> bool:
@@ -130,10 +131,16 @@ def load_session(platform: DesktopPlatform, metadata: Path, target_id: str) -> T
                 if raw.get("rendererCDPEndpoint") is not None
                 else None
             ),
+            engine_override_sha256=(str(raw["engineOverrideSha256"]) if raw.get("engineOverrideSha256") is not None else None),
         )
     except (FileNotFoundError, OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         return None
     if session.target_id != target_id:
+        return None
+    if session.engine_override_sha256 is not None and (
+        len(session.engine_override_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in session.engine_override_sha256)
+    ):
         return None
     if not valid_renderer_cdp_endpoint(session.renderer_cdp_endpoint):
         return None
@@ -158,6 +165,7 @@ def atomic_write_session(path: Path, session: TargetSession) -> None:
                 "supervisorPID": session.supervisor_pid,
                 "backendPID": session.backend_pid,
                 "desktopPID": session.desktop_pid,
+                **({"engineOverrideSha256": session.engine_override_sha256} if session.engine_override_sha256 else {}),
                 **(
                     {"responsesRouteFingerprint": session.responses_route_fingerprint}
                     if session.responses_route_fingerprint is not None

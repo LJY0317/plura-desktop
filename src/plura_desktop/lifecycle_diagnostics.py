@@ -37,12 +37,16 @@ _ERROR_TYPES = frozenset((
     "ValueError", "KeyError", "TypeError", "TimeoutError",
     "CalledProcessError", "JSONDecodeError",
 ))
-_OPERATIONS = frozenset(("refresh", "prepare_launch", "launch_runtime"))
+_OPERATIONS = frozenset(("refresh", "prepare_launch", "launch_runtime", "launch_supervisor"))
 _PHASES = frozenset((
     "begin", "update_lock", "manifest_validation", "official_source_validation",
     "managed_process_check", "runtime_prepare", "selector_staging", "control_runtime_prepare",
     "ownership_validation", "manifest_commit", "final_validation",
     "launch_preflight", "runtime_spawn", "runtime_session_wait", "complete",
+    "supervisor_managed_prepare", "supervisor_catalog", "supervisor_backend_spawn",
+    "supervisor_backend_ready", "supervisor_proxy_ready", "supervisor_gui_spawn",
+    "supervisor_gui_identity", "supervisor_renderer_ready",
+    "supervisor_session_commit", "supervisor_operating",
 ))
 
 

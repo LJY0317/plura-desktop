@@ -29,9 +29,10 @@ from .diagnostic_artifacts import (
     write_diagnostic_artifact as write_product_diagnostic_artifact,
 )
 from .version import __version__
+from .manager import target_session
+from .platforms import current_platform
 
 
-OFFICIAL_EXECUTABLE = "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
 UUID_RE = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 PROJECT_BASE_RE = r"g-p-[0-9a-fA-F]{32}"
 NATIVE_CODEX_STRUCTURAL_TARGETS = (
@@ -749,24 +750,14 @@ def summarize_lines(lines: list[str], cutoff: datetime | None = None) -> dict:
 
 
 def profile_main_pids(home: Path, profile: int) -> list[int]:
-    rows = subprocess.check_output(["/bin/ps", "-axo", "pid=,args="], text=True)
-    default_data = str(home / "Library/Application Support/Codex")
-    selected_data = str(home / f"Library/Application Support/Codex-Profile{profile}")
-    result = []
-    for row in rows.splitlines():
-        parts = row.strip().split(None, 1)
-        if len(parts) != 2:
-            continue
-        command = parts[1]
-        if not (command == OFFICIAL_EXECUTABLE or command.startswith(OFFICIAL_EXECUTABLE + " ")):
-            continue
-        markers = re.findall(r"--user-data-dir=([^\n]+?)(?=\s--[A-Za-z0-9_-]+(?:=|\s)|$)", command)
-        if profile == 1:
-            if not markers or markers == [default_data]:
-                result.append(int(parts[0]))
-        elif len(markers) == 1 and markers[0] == selected_data:
-            result.append(int(parts[0]))
-    return result
+    # The lifecycle adapter validates both the official default executable and the
+    # signature-preserving managed clone. Do not duplicate its process identity rules.
+    target_id = "default" if profile == 1 else f"local.plura-desktop.profile{profile}"
+    session = target_session(current_platform(home=home), target_id)
+    pid = session.get("desktopProcessID")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return []
+    return [pid]
 
 
 def current_log_for_profile(home: Path, profile: int) -> Path:

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+from itertools import islice
 import os
 from pathlib import Path
 import re
 import secrets
 import shutil
+import stat
 
 from .domain import MANIFEST_SCHEMA, profile_identifier, validate_profile_index
 
@@ -150,6 +152,44 @@ def write_diagnostic_artifact(
     for directory in (diagnostics, profile_root, incidents):
         _ensure_private_directory(directory)
     validate_profile_diagnostic_tree(metadata, profile)
+    return _write_bounded_incident(incidents, incident, data, artifact, max_incidents)
+
+
+def read_diagnostic_artifacts(metadata: Path, profile: int) -> list[dict]:
+    """Read only the bounded, owned summaries on an explicit status request."""
+    root = diagnostic_incidents_root(metadata, profile)
+    if not root.exists():
+        return []
+    _validate_installed_profile(metadata, profile)
+    candidates = list(islice(root.iterdir(), DIAGNOSTIC_ARTIFACT_MAX_INCIDENTS + 1))
+    if len(candidates) > DIAGNOSTIC_ARTIFACT_MAX_INCIDENTS:
+        raise RuntimeError("Diagnostic retention limit exceeded")
+    validate_profile_diagnostic_tree(metadata, profile)
+    summaries = []
+    for candidate in sorted(candidates, key=lambda item: (item / "summary.json").stat().st_mtime_ns):
+        path = candidate / "summary.json"
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            identity = os.fstat(stream.fileno())
+            if not stat.S_ISREG(identity.st_mode) or (hasattr(os, "getuid") and identity.st_uid != os.getuid()):
+                raise RuntimeError("Diagnostic summary ownership is invalid")
+            data = stream.read(DIAGNOSTIC_ARTIFACT_MAX_BYTES + 1)
+        if len(data) > DIAGNOSTIC_ARTIFACT_MAX_BYTES:
+            raise RuntimeError("Diagnostic size limit exceeded")
+        try:
+            value = json.loads(data)
+        except (ValueError, UnicodeError):
+            continue
+        if isinstance(value, dict):
+            summaries.append(value)
+    return summaries
+
+
+def _write_bounded_incident(incidents: Path, incident: str, data: bytes, artifact: dict, max_incidents: int) -> dict:
+    for candidate in incidents.iterdir():
+        if not INCIDENT_ID_RE.fullmatch(candidate.name):
+            raise RuntimeError("Unexpected diagnostic artifact")
+        _safe_incident_directory(candidate)
     retained = sorted(incidents.iterdir(), key=lambda item: item.name)
 
     incident_root = incidents / incident
@@ -158,9 +198,67 @@ def write_diagnostic_artifact(
     incident_root.mkdir(mode=0o700)
     _atomic_private_write(incident_root / "summary.json", data)
     retained.append(incident_root)
-    retained.sort(key=lambda item: item.name)
+    # Random incident suffixes do not order writes within the same second.
+    retained.sort(key=lambda item: ((item / "summary.json").stat().st_mtime_ns, item.name))
     while len(retained) > max_incidents:
         oldest = retained.pop(0)
         shutil.rmtree(oldest)
 
     return {**artifact, "sizeBytes": len(data)}
+
+
+
+def write_runtime_diagnostic_artifact(metadata: Path, target_id: str, supervisor_pid: int, output: dict) -> dict:
+    """Default and managed runtime evidence, authorized by the exact live owner descriptor."""
+    from .runtime import descriptor_path, route_key
+    _require_owned_directory(metadata, "Runtime metadata")
+    descriptor = descriptor_path(metadata, target_id)
+    if descriptor.is_symlink() or not descriptor.is_file() or not _owned_by_current_user(descriptor):
+        raise RuntimeError("Runtime diagnostic owner is unavailable")
+    if descriptor.stat().st_size > 16 * 1024:
+        raise RuntimeError("Runtime descriptor exceeds bound")
+    owner = json.loads(descriptor.read_text(encoding="utf-8"))
+    if owner.get("targetID") != target_id or owner.get("supervisorPID") != supervisor_pid:
+        raise RuntimeError("Runtime diagnostic owner changed")
+    incident = new_incident_id()
+    artifact = {"schema": 1, "incident": incident, "targetHash": route_key(target_id),
+                "maxBytes": DIAGNOSTIC_ARTIFACT_MAX_BYTES, "retentionMaxIncidents": DIAGNOSTIC_ARTIFACT_MAX_INCIDENTS}
+    data = (json.dumps({**output, "artifact": artifact}, sort_keys=True, indent=2) + "\n").encode()
+    if len(data) > DIAGNOSTIC_ARTIFACT_MAX_BYTES:
+        raise RuntimeError("Runtime diagnostic exceeds bound")
+    root = metadata / "diagnostics"
+    runtime = root / "runtime"
+    target = runtime / route_key(target_id)
+    incidents = target / "incidents"
+    for directory in (root, runtime, target, incidents):
+        _ensure_private_directory(directory)
+    if any(path.name != "incidents" for path in target.iterdir()):
+        raise RuntimeError("Runtime diagnostic namespace changed")
+    return _write_bounded_incident(incidents, incident, data, artifact, DIAGNOSTIC_ARTIFACT_MAX_INCIDENTS)
+
+
+def validate_runtime_diagnostic_tree(metadata: Path) -> Path | None:
+    root = metadata / "diagnostics" / "runtime"
+    if not root.exists():
+        return None
+    for directory in (metadata, root.parent, root):
+        _require_owned_directory(directory, "Runtime diagnostic namespace")
+    for target in root.iterdir():
+        if not re.fullmatch(r"[0-9a-f]{20}", target.name):
+            raise RuntimeError("Runtime diagnostic target changed")
+        _require_owned_directory(target, "Runtime diagnostic target")
+        if [entry.name for entry in target.iterdir()] != ["incidents"]:
+            raise RuntimeError("Runtime diagnostic target contains unexpected artifacts")
+        incidents = target / "incidents"
+        _require_owned_directory(incidents, "Runtime incidents")
+        for incident in incidents.iterdir():
+            if not INCIDENT_ID_RE.fullmatch(incident.name):
+                raise RuntimeError("Runtime incident changed")
+            _safe_incident_directory(incident)
+            summary = incident / "summary.json"
+            if summary.stat().st_size > DIAGNOSTIC_ARTIFACT_MAX_BYTES:
+                raise RuntimeError("Runtime summary exceeds bound")
+            artifact = json.loads(summary.read_text(encoding="utf-8")).get("artifact", {})
+            if artifact.get("schema") != 1 or artifact.get("targetHash") != target.name or artifact.get("incident") != incident.name:
+                raise RuntimeError("Runtime summary ownership changed")
+    return root

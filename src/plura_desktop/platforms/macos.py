@@ -14,11 +14,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 from ..domain import ProfileLayout
 from ..version import __version__
-from .base import DesktopPlatform, STABLE_FROZEN_RUNTIME_ENV
+from .base import DesktopPlatform, DesktopLaunch, STABLE_FROZEN_RUNTIME_ENV
+from .macos_volume import volume_uuid
 
 
 DEFAULT_APP_BUNDLE = Path("/Applications/ChatGPT.app")
@@ -237,6 +239,17 @@ class MacOSPlatform(DesktopPlatform):
     def _profile_runtime_root(self, layout: ProfileLayout) -> Path:
         return layout.metadata / "runtime-apps" / f"profile-{layout.index}"
 
+    def runtime_generation(self, layout: ProfileLayout) -> tuple[int, int] | None:
+        """Observe the atomic runtime-root replacement without a second codesign."""
+        root = self._profile_runtime_root(layout)
+        if self._is_linklike(root):
+            return None
+        try:
+            stat = root.lstat()
+            return (stat.st_dev, stat.st_ino) if root.is_dir() else None
+        except OSError:
+            return None
+
     def _profile_runtime_bundle(self, layout: ProfileLayout) -> Path:
         return self._profile_runtime_root(layout) / "ChatGPT.app"
 
@@ -318,7 +331,7 @@ class MacOSPlatform(DesktopPlatform):
         *,
         source_fingerprint: dict[str, str],
         profile_running: bool,
-    ) -> bool:
+    ) -> Path:
         runtime_root = self._profile_runtime_root(layout)
         runtime_parent = runtime_root.parent
         self.assert_safe_ancestry(runtime_parent)
@@ -327,7 +340,7 @@ class MacOSPlatform(DesktopPlatform):
             raise RuntimeError(f"Managed runtime parent is unsafe or replaced: {runtime_parent}")
 
         if self._runtime_matches(layout, executable, source_fingerprint):
-            return False
+            return self._profile_runtime_executable(layout)
         if runtime_root.exists():
             if self._is_linklike(runtime_root) or not runtime_root.is_dir() or not self.is_owned(runtime_root):
                 raise RuntimeError(f"Managed runtime is unsafe or replaced: {runtime_root}")
@@ -384,7 +397,7 @@ class MacOSPlatform(DesktopPlatform):
 
         if not self._runtime_matches(layout, executable, source_fingerprint):
             raise RuntimeError("Managed ChatGPT runtime verification failed after refresh")
-        return True
+        return self._profile_runtime_executable(layout)
 
     def profile_executable(
         self,
@@ -450,31 +463,7 @@ class MacOSPlatform(DesktopPlatform):
 
     @staticmethod
     def volume_uuid(path: Path) -> str:
-        try:
-            df = subprocess.check_output(
-                ["/bin/df", "-P", str(path)],
-                text=True,
-                stderr=subprocess.DEVNULL,
-            )
-            lines = [line for line in df.splitlines() if line.strip()]
-            if len(lines) < 2:
-                raise RuntimeError("Filesystem identity lookup returned no mount data")
-            device = lines[-1].split()[0]
-            if not device.startswith("/dev/"):
-                raise RuntimeError("Managed path is not on a local disk volume")
-            output = subprocess.check_output(
-                ["/usr/sbin/diskutil", "info", "-plist", device],
-                stderr=subprocess.DEVNULL,
-            )
-            info = plistlib.loads(output)
-        except (OSError, plistlib.InvalidFileException, subprocess.SubprocessError) as error:
-            raise RuntimeError("APFS volume identity lookup failed") from error
-        if info.get("FilesystemType") != "apfs":
-            raise RuntimeError("Managed path is not on APFS")
-        try:
-            return str(uuid.UUID(info.get("VolumeUUID"))).upper()
-        except (AttributeError, TypeError, ValueError) as error:
-            raise RuntimeError("APFS Volume UUID unavailable") from error
+        return volume_uuid(path)
 
     def write_selector(
         self,
@@ -630,7 +619,9 @@ class MacOSPlatform(DesktopPlatform):
             rows = subprocess.check_output(["ps", "-axo", "pid=,ppid=,args="], text=True)
         except subprocess.SubprocessError as error:
             raise RuntimeError("Unable to inspect ChatGPT desktop process identity") from error
-        expected = str(executable)
+        # Finder/LaunchServices may canonicalize /var/... to /private/var/...
+        # for exactly the same executable. Never match by bundle ID alone.
+        expected_paths = {str(executable), str(executable.resolve())}
         matches: list[int] = []
         for row in rows.splitlines():
             stripped = row.strip()
@@ -638,21 +629,37 @@ class MacOSPlatform(DesktopPlatform):
             if len(parts) != 3 or not parts[0].isdigit():
                 continue
             command = parts[2]
-            if command == expected or command.startswith(expected + " "):
+            if any(command == expected or command.startswith(expected + " ") for expected in expected_paths):
                 matches.append(int(parts[0]))
         return matches[0] if len(matches) == 1 else None
 
     def request_desktop_quit(self, executable: Path, desktop_pid: int) -> None:
-        bundle = self._bundle_for_executable(executable)
         observed = self.desktop_process_id(executable)
         if observed != desktop_pid:
             raise RuntimeError("ChatGPT desktop process identity changed before normal quit")
-        escaped = str(bundle).replace("\\", "\\\\").replace('"', '\\"')
-        script = f'tell application "{escaped}" to quit'
+        # Profiles 1/2 may share an upstream bundle ID. Recheck the exact
+        # executable path inside the AppKit process before requesting a
+        # *normal*, PID-specific termination; never kill by bundle/name.
+        allowed_paths = sorted({str(executable), str(executable.resolve())})
+        script = (
+            'ObjC.import("AppKit");'
+            f'var app=$.NSRunningApplication.runningApplicationWithProcessIdentifier({desktop_pid});'
+            'if(!app||!app.executableURL)throw Error("target_missing");'
+            'var actual=ObjC.unwrap(app.executableURL.path.stringByResolvingSymlinksInPath);'
+            # Foundation may normalize /private/var to /var even when Python's
+            # realpath selects the opposite spelling. Compare both sides with
+            # the *same* Cocoa canonicalization function; not a path suffix.
+            f'var allowed={json.dumps(allowed_paths)};'
+            'var canonical=allowed.map(function(p){return ObjC.unwrap('
+            '$.NSString.stringWithString(p).stringByResolvingSymlinksInPath);});'
+            'if(canonical.indexOf(actual)<0)throw Error("target_changed");'
+            'if(!app.terminate)throw Error("quit_refused");'
+            '"normal_quit_requested";'
+        )
         try:
             result = subprocess.run(
-                ["/usr/bin/osascript", "-e", script],
-                stdout=subprocess.DEVNULL,
+                ["/usr/bin/osascript", "-l", "JavaScript", "-e", script],
+                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 timeout=15,
@@ -660,10 +667,9 @@ class MacOSPlatform(DesktopPlatform):
             )
         except (OSError, subprocess.SubprocessError) as error:
             raise RuntimeError("Unable to request normal ChatGPT quit") from error
-        if result.returncode != 0:
-            detail = " ".join(result.stderr.split())[:240]
-            suffix = f": {detail}" if detail else ""
-            raise RuntimeError(f"ChatGPT normal quit request failed{suffix}")
+        if result.returncode != 0 or result.stdout.strip() != "normal_quit_requested":
+            # Do not echo JXA's raw stderr; it may contain local user paths.
+            raise RuntimeError("Exact-PID ChatGPT normal quit request failed or was refused")
 
     def sanitized_environment(self, layout: ProfileLayout) -> dict[str, str]:
         username = self._current_username()
@@ -700,57 +706,61 @@ class MacOSPlatform(DesktopPlatform):
             ))
         return command
 
-    def launch(
-        self,
-        layout: ProfileLayout,
-        executable: Path,
-        *,
-        rust_log: str | None,
-        app_server_url: str | None = None,
+    def supervised_desktop_pid(
+        self, executable: Path, launcher: subprocess.Popen, *, deadline: float
+    ) -> int:
+        # LaunchServices owns the app process; open -W is only its lifecycle waiter.
+        while time.monotonic() < deadline:
+            if launcher.poll() is not None:
+                raise RuntimeError("macOS application launcher exited before Desktop started")
+            pid = self.desktop_process_id(executable)
+            if pid is not None:
+                return pid
+            time.sleep(0.05)
+        raise RuntimeError("macOS Desktop process identity was not established before startup deadline")
+
+    def desktop_launch_spec(
+        self, executable: Path, *, layout: ProfileLayout | None,
+        app_server_url: str | None, rust_log: str | None = None,
         renderer_cdp_port: int | None = None,
-    ) -> None:
-        env = self.sanitized_environment(layout)
+    ) -> DesktopLaunch:
+        if layout is None:
+            username = self._current_username()
+            env = {"HOME": str(self.home), "USER": username, "LOGNAME": username,
+                   "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                   "LANG": "en_US.UTF-8", "CODEX_HOME": str(self.default_codex_home()),
+                   "CODEX_ELECTRON_USER_DATA_PATH": str(self.default_user_data())}
+            if os.environ.get("TMPDIR"):
+                env["TMPDIR"] = os.environ["TMPDIR"]
+            args = ["--user-data-dir=" + str(self.default_user_data())]
+        else:
+            env = self.sanitized_environment(layout)
+            args = self.process_command(executable, layout)[1:]
         if rust_log:
             env["RUST_LOG"] = rust_log
         if app_server_url:
             env["CODEX_APP_SERVER_WS_URL"] = app_server_url
-        os.chdir(self.home)
-        os.execve(
-            str(executable),
-            self.process_command(executable, layout) + self.renderer_cdp_args(renderer_cdp_port),
-            env,
-        )
+        command = ["/usr/bin/open", "-W", "-n", "-a", str(self._bundle_for_executable(executable)),
+                   "--args", *args, *self.renderer_cdp_args(renderer_cdp_port)]
+        return DesktopLaunch(tuple(command), env, self.home)
 
-    def launch_default(
-        self,
-        executable: Path,
-        *,
-        app_server_url: str | None = None,
-        renderer_cdp_port: int | None = None,
-    ) -> None:
-        username = self._current_username()
-        env = {
-            "HOME": str(self.home),
-            "USER": username,
-            "LOGNAME": username,
-            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-            "LANG": "en_US.UTF-8",
-            "CODEX_HOME": str(self.default_codex_home()),
-            "CODEX_ELECTRON_USER_DATA_PATH": str(self.default_user_data()),
-        }
-        if os.environ.get("TMPDIR"):
-            env["TMPDIR"] = os.environ["TMPDIR"]
-        if app_server_url:
-            env["CODEX_APP_SERVER_WS_URL"] = app_server_url
-        os.chdir(self.home)
-        os.execve(
-            str(executable),
-            [str(executable), "--user-data-dir=" + str(self.default_user_data())]
-            + self.renderer_cdp_args(renderer_cdp_port),
-            env,
-        )
+    def launch(self, layout: ProfileLayout, executable: Path, *, rust_log: str | None,
+               app_server_url: str | None = None, renderer_cdp_port: int | None = None) -> None:
+        spec = self.desktop_launch_spec(executable, layout=layout, rust_log=rust_log,
+                                       app_server_url=app_server_url, renderer_cdp_port=renderer_cdp_port)
+        os.chdir(spec.cwd)
+        os.execve(spec.command[0], list(spec.command), spec.environment)
+
+    def launch_default(self, executable: Path, *, app_server_url: str | None = None,
+                       renderer_cdp_port: int | None = None) -> None:
+        spec = self.desktop_launch_spec(executable, layout=None, app_server_url=app_server_url,
+                                       renderer_cdp_port=renderer_cdp_port)
+        os.chdir(spec.cwd)
+        os.execve(spec.command[0], list(spec.command), spec.environment)
 
     def resolve_codex_executable(self, chatgpt_executable: Path) -> Path:
+        if os.environ.get("CODEX_EXECUTABLE") or os.environ.get("CODEX_EXECUTABLE_SHA256"):
+            return super().resolve_codex_executable(chatgpt_executable)
         resources = chatgpt_executable.parents[1] / "Resources"
         legacy = resources / "codex"
         if legacy.is_file() and os.access(legacy, os.X_OK):

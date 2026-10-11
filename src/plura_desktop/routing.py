@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 from typing import Any
+from pathlib import Path
 from urllib.parse import urlsplit
 
 
@@ -27,10 +28,11 @@ class ResponsesRoute:
     env_key: str
     fingerprint: str
     runtime_header_name: str = _RUNTIME_HEADER
+    model_catalog_json: str | None = None
 
     @classmethod
     def create(
-        cls, base_url: str, env_key: str, credential: str, runtime_header_name: str | None = None
+        cls, base_url: str, env_key: str, credential: str, runtime_header_name: str | None = None, model_catalog_json: str | None = None
     ) -> "ResponsesRoute":
         parsed = urlsplit(base_url)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}:
@@ -49,6 +51,17 @@ class ResponsesRoute:
             runtime_header_name = _RUNTIME_HEADER
         if runtime_header_name != _RUNTIME_HEADER:
             raise ValueError(f"Responses route runtime header must be {_RUNTIME_HEADER}")
+        catalog_hash = None
+        if model_catalog_json is not None:
+            path = Path(model_catalog_json)
+            if not path.is_absolute() or path.is_symlink() or not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
+                raise ValueError("Model catalog must be a bounded absolute regular JSON file")
+            payload = path.read_bytes()
+            catalog = json.loads(payload)
+            if not isinstance(catalog, dict) or not isinstance(catalog.get("models"), list) or not catalog["models"]:
+                raise ValueError("Model catalog must contain models")
+            model_catalog_json = str(path.resolve(strict=True))
+            catalog_hash = hashlib.sha256(payload).hexdigest()
         normalized = f"http://{parsed.hostname}:{parsed.port}/v1"
         credential_hash = hashlib.sha256(credential.encode("utf-8")).hexdigest()
         material = json.dumps(
@@ -58,6 +71,7 @@ class ResponsesRoute:
                 "envKey": env_key,
                 "provider": _PROVIDER_ID,
                 "runtimeHeaderName": runtime_header_name,
+                **({"modelCatalogSha256": catalog_hash} if catalog_hash else {}),
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -67,6 +81,7 @@ class ResponsesRoute:
             env_key=env_key,
             fingerprint=hashlib.sha256(material).hexdigest(),
             runtime_header_name=runtime_header_name,
+            model_catalog_json=model_catalog_json,
         )
 
     def codex_config_args(self) -> tuple[str, ...]:
@@ -74,6 +89,8 @@ class ResponsesRoute:
             f"model_provider={_toml_string(_PROVIDER_ID)}",
             f"openai_base_url={_toml_string(self.base_url)}",
         )
+        if self.model_catalog_json is not None:
+            values += (f"model_catalog_json={_toml_string(self.model_catalog_json)}",)
         result: list[str] = []
         for value in values:
             result.extend(("-c", value))

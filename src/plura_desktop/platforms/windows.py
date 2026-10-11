@@ -216,13 +216,11 @@ class WindowsPlatform(DesktopPlatform):
         if rust_log:
             env["RUST_LOG"] = rust_log
         if app_server_url:
-            env["CODEX_APP_SERVER_WS_URL"] = app_server_url
-            os.chdir(self.home)
-            os.execve(
-                str(executable),
-                self.process_command(executable, layout) + self.renderer_cdp_args(renderer_cdp_port),
-                env,
-            )
+            spec = self.desktop_launch_spec(executable, layout=layout,
+                app_server_url=app_server_url, rust_log=rust_log,
+                renderer_cdp_port=renderer_cdp_port)
+            os.chdir(spec.cwd)
+            os.execve(spec.command[0], list(spec.command), spec.environment)
             return
         creationflags = 0
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -249,14 +247,11 @@ class WindowsPlatform(DesktopPlatform):
         env["CODEX_HOME"] = str(self.default_codex_home())
         env["CODEX_ELECTRON_USER_DATA_PATH"] = str(self.default_user_data())
         if app_server_url:
-            env["CODEX_APP_SERVER_WS_URL"] = app_server_url
-            os.chdir(self.home)
-            os.execve(
-                str(executable),
-                [str(executable), "--user-data-dir=" + str(self.default_user_data())]
-                + self.renderer_cdp_args(renderer_cdp_port),
-                env,
-            )
+            spec = self.desktop_launch_spec(executable, layout=None,
+                app_server_url=app_server_url, rust_log=None,
+                renderer_cdp_port=renderer_cdp_port)
+            os.chdir(spec.cwd)
+            os.execve(spec.command[0], list(spec.command), spec.environment)
             return
         creationflags = 0
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)

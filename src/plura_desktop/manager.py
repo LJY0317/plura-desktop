@@ -4,10 +4,15 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import time
+import threading
+import tempfile
+from dataclasses import replace
+from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -16,14 +21,16 @@ from .domain import (
     MANIFEST_SCHEMA,
     ManagedPath,
 )
-from .diagnostic_artifacts import validate_profile_diagnostic_tree
+from .diagnostic_artifacts import (read_diagnostic_artifacts, validate_profile_diagnostic_tree, write_diagnostic_artifact, write_runtime_diagnostic_artifact, validate_runtime_diagnostic_tree)
 from .lifecycle_diagnostics import UpdateLifecycleReceipt, latest_update_receipt
+from .permission_diagnostics import PermissionDiagnostics, permission_resume_summary
 from .io import atomic_write_json
 from .app_server_proxy import RoutePreservingAppServerProxy
 from .platforms import DesktopPlatform, current_platform
 from .platforms.base import STABLE_FROZEN_RUNTIME_ENV
 from .routing import ResponsesRoute
 from .model_list_overlay import ModelListOverlay
+from .engine import codex_engine_override
 from .runtime import (
     TargetSession,
     acquire_runtime_claim,
@@ -39,6 +46,7 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 ENTRYPOINT_SOURCE = PACKAGE_DIR / "_runtime_entrypoint.py"
 SUPERVISOR_STARTUP_TIMEOUT_SECONDS = 30.0
 SESSION_START_TIMEOUT_SECONDS = 35.0
+NORMAL_QUIT_TIMEOUT_SECONDS = 60.0
 def _is_linklike(path: Path) -> bool:
     if path.is_symlink():
         return True
@@ -356,13 +364,15 @@ class Profile:
         running = bool(self.running())
         receipt.flag("managedProfileRunning", running)
         receipt.stage("runtime_prepare")
-        runtime_rebuilt = self.platform.prepare_profile_runtime(
+        previous_generation = self.platform.runtime_generation(self.layout)
+        self.platform.prepare_profile_runtime(
             self.layout,
             executable,
             source_fingerprint=source_fingerprint,
             profile_running=running,
         )
-        if runtime_rebuilt:
+        new_generation = self.platform.runtime_generation(self.layout)
+        if new_generation is not None and previous_generation != new_generation:
             receipt.flag("managedRuntimeRebuilt", True)
             receipt.note_reconciliation()
         receipt.stage("ownership_validation")
@@ -441,21 +451,23 @@ class Profile:
         receipt.stage("runtime_prepare")
         # A managed clone can change via its own updater even if the
         # official app has not changed. It remains a disposable artifact.
-        runtime_rebuilt = self.platform.prepare_profile_runtime(
+        previous_generation = self.platform.runtime_generation(self.layout)
+        prepared_executable = self.platform.prepare_profile_runtime(
             self.layout,
             executable,
             source_fingerprint=manifest["official_baseline"],
             profile_running=bool(self.running()),
         )
-        if runtime_rebuilt:
+        new_generation = self.platform.runtime_generation(self.layout)
+        if new_generation is not None and previous_generation != new_generation:
             receipt.flag("managedRuntimeRebuilt", True)
             receipt.note_reconciliation()
         receipt.stage("final_validation")
-        return self.platform.profile_executable(
-            self.layout,
-            executable,
-            source_fingerprint=manifest["official_baseline"],
-        )
+        # prepare_profile_runtime returned this same-launch verified identity.
+        # A second profile_executable() would repeat macOS codesign every
+        # launch and can add noticeable startup latency.
+        return prepared_executable
+
     def launch(
         self,
         *,
@@ -513,6 +525,12 @@ class Profile:
                 "Latest update incident:",
                 update["outcome"], update["operation"], "at", update["phase"],
             )
+        try:
+            lines = permission_resume_summary(read_diagnostic_artifacts(self.meta, self.index))
+        except (OSError, RuntimeError, ValueError):
+            lines = ["Permission resume evidence: unavailable; diagnostic artifacts could not be safely read."]
+        for line in lines:
+            print(line)
 
     @property
     def diagnostic_artifacts(self) -> Path:
@@ -607,6 +625,14 @@ class Profile:
         ]
         if manifests:
             return
+        runtime_diagnostics = validate_runtime_diagnostic_tree(self.meta)
+        if runtime_diagnostics is not None:
+            self.platform.ensure_no_mounts(runtime_diagnostics)
+            shutil.rmtree(runtime_diagnostics)
+            try:
+                runtime_diagnostics.parent.rmdir()
+            except OSError:
+                pass
         for generated in (
             self.meta / "plura-desktop",
             self.meta / "plura-desktop.cmd",
@@ -647,11 +673,18 @@ class Profile:
             if entry.kind == "directory":
                 self.platform.ensure_no_mounts(entry.path)
         has_diagnostic_artifacts = self._validate_diagnostic_artifacts()
+        runtime_diagnostics = None
+        if len(list(self.meta.glob("profile-*-install-manifest.json"))) == 1:
+            runtime_diagnostics = validate_runtime_diagnostic_tree(self.meta)
+            if runtime_diagnostics is not None:
+                self.platform.ensure_no_mounts(runtime_diagnostics)
         print(f"Remove only these installed paths (including Profile {self.index} conversations/login):")
         for entry in targets:
             print(entry.path)
         if has_diagnostic_artifacts:
             print(self.diagnostic_artifacts)
+        if runtime_diagnostics is not None:
+            print(runtime_diagnostics)
         print(self.manifest)
         if not yes:
             print("Dry run only. Re-run uninstall with --yes to apply.")
@@ -666,37 +699,48 @@ class Profile:
         self._cleanup_shared_metadata()
         print(f"Uninstalled Profile {self.index}. Official app/default profile were not targeted.")
 
-def public_targets(platform: DesktopPlatform) -> dict[str, Any]:
+def _target_inventory(
+    platform: DesktopPlatform, *, target_id: str | None = None
+) -> dict[str, Any]:
+    """Project the public contract, checking only a selected lifecycle target when given.
+
+    Selection is not cached authority: each process still checks the selected manifest,
+    current running state, executable capability and owned session independently.
+    """
     metadata = platform.layout(DEFAULT_MANAGED_PROFILE_INDEX).metadata
-    try:
-        default_running = platform.running_default()
-        default_state = "running" if default_running else "stopped"
-    except (OSError, RuntimeError, ValueError):
-        default_running = []
-        default_state = "invalid"
-    try:
-        default_executable = platform.resolve_executable()
-        platform.resolve_codex_executable(default_executable)
-        default_shared_app_server = True
-    except (OSError, RuntimeError, ValueError):
-        default_shared_app_server = False
-    targets: list[dict[str, Any]] = [
-        {
-            "id": "default",
-            "displayName": "ChatGPT",
-            "role": "default",
-            "managed": False,
-            "ownership": "official-desktop-profile",
-            "backendPolicy": "single-authoritative-profile-runtime",
-            "state": default_state,
-            "runningProcessCount": len(default_running),
-            "sharedAppServerSupported": default_shared_app_server,
-            "responsesRouteSupported": default_shared_app_server,
-            "modelListOverlaySupported": default_shared_app_server,
-            "rendererCDPSupported": default_shared_app_server,
-        }
-    ]
-    if metadata.is_dir() and not _is_linklike(metadata):
+    targets: list[dict[str, Any]] = []
+    if target_id is None or target_id == "default":
+        try:
+            default_running = platform.running_default()
+            default_state = "running" if default_running else "stopped"
+        except (OSError, RuntimeError, ValueError):
+            default_running = []
+            default_state = "invalid"
+        try:
+            default_executable = platform.resolve_executable()
+            platform.resolve_codex_executable(default_executable)
+            default_shared_app_server = True
+        except (OSError, RuntimeError, ValueError):
+            default_shared_app_server = False
+        targets = [
+            {
+                "id": "default",
+                "displayName": "ChatGPT",
+                "role": "default",
+                "managed": False,
+                "ownership": "official-desktop-profile",
+                "backendPolicy": "single-authoritative-profile-runtime",
+                "state": default_state,
+                "runningProcessCount": len(default_running),
+                "sharedAppServerSupported": default_shared_app_server,
+                "responsesRouteSupported": default_shared_app_server,
+                "modelListOverlaySupported": default_shared_app_server,
+                "startupModelCatalogSupported": default_shared_app_server,
+                "rendererCDPSupported": default_shared_app_server,
+                "engineOverrideSupported": default_shared_app_server,
+            }
+        ]
+    if target_id != "default" and metadata.is_dir() and not _is_linklike(metadata):
         for manifest_path in sorted(metadata.glob("profile-*-install-manifest.json")):
             try:
                 if _is_linklike(manifest_path) or not manifest_path.is_file():
@@ -706,6 +750,8 @@ def public_targets(platform: DesktopPlatform) -> dict[str, Any]:
                 if not isinstance(index, int):
                     continue
                 profile = Profile(index=index, platform=platform)
+                if target_id is not None and profile.identifier != target_id:
+                    continue
                 target = {**profile.status_data(), "managed": True}
                 try:
                     executable = platform.resolve_executable(raw.get("app_executable"))
@@ -713,24 +759,32 @@ def public_targets(platform: DesktopPlatform) -> dict[str, Any]:
                     target["sharedAppServerSupported"] = True
                     target["responsesRouteSupported"] = True
                     target["modelListOverlaySupported"] = True
+                    target["startupModelCatalogSupported"] = True
                     target["rendererCDPSupported"] = True
+                    target["engineOverrideSupported"] = True
                 except (OSError, RuntimeError, ValueError):
                     target["sharedAppServerSupported"] = False
                     target["responsesRouteSupported"] = False
                     target["modelListOverlaySupported"] = False
+                    target["startupModelCatalogSupported"] = False
                     target["rendererCDPSupported"] = False
+                    target["engineOverrideSupported"] = False
                 targets.append(target)
             except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
                 continue
     for target in targets:
-        target["sessionState"] = _session_state(platform, target)
-        target["rendererCDPState"] = _renderer_cdp_state(platform, target)
+        session = load_session(platform, metadata, target["id"])
+        target["sessionState"] = _session_state(target, session)
+        target["rendererCDPState"] = _renderer_cdp_state(target, session)
     return {
         "contractVersion": 1,
         "platform": platform.platform_id,
         "targets": targets,
     }
 
+
+def public_targets(platform: DesktopPlatform) -> dict[str, Any]:
+    return _target_inventory(platform)
 
 def _validate_loopback_websocket_url(value: str) -> str:
     parsed = urlsplit(value)
@@ -744,7 +798,7 @@ def _validate_loopback_websocket_url(value: str) -> str:
 
 
 def _target(platform: DesktopPlatform, target_id: str) -> dict[str, Any]:
-    contract = public_targets(platform)
+    contract = _target_inventory(platform, target_id=target_id)
     matches = [target for target in contract["targets"] if target.get("id") == target_id]
     if len(matches) != 1:
         raise RuntimeError(f"Unknown target: {target_id}")
@@ -755,11 +809,8 @@ def _metadata(platform: DesktopPlatform) -> Path:
     return platform.layout(DEFAULT_MANAGED_PROFILE_INDEX).metadata
 
 
-def _session_state(platform: DesktopPlatform, target: dict[str, Any]) -> str:
-    target_id = target.get("id")
-    if not isinstance(target_id, str) or not target_id:
-        return "unavailable"
-    if load_session(platform, _metadata(platform), target_id) is not None:
+def _session_state(target: dict[str, Any], session: TargetSession | None) -> str:
+    if session is not None:
         return "ready"
     if target.get("sharedAppServerSupported") is not True:
         return "unsupported"
@@ -770,11 +821,7 @@ def _session_state(platform: DesktopPlatform, target: dict[str, Any]) -> str:
     return "unavailable"
 
 
-def _renderer_cdp_state(platform: DesktopPlatform, target: dict[str, Any]) -> str:
-    target_id = target.get("id")
-    if not isinstance(target_id, str) or not target_id:
-        return "unavailable"
-    session = load_session(platform, _metadata(platform), target_id)
+def _renderer_cdp_state(target: dict[str, Any], session: TargetSession | None) -> str:
     if session is not None:
         return "ready" if session.renderer_cdp_endpoint is not None else "restart-required"
     if target.get("rendererCDPSupported") is not True:
@@ -789,16 +836,18 @@ def _renderer_cdp_state(platform: DesktopPlatform, target: dict[str, Any]) -> st
 def target_session(platform: DesktopPlatform, target_id: str) -> dict[str, Any]:
     target = _target(platform, target_id)
     session = load_session(platform, _metadata(platform), target_id)
-    state = "ready" if session is not None else _session_state(platform, target)
+    state = _session_state(target, session)
     value: dict[str, Any] = {
         "contractVersion": 1,
         "targetID": target_id,
         "state": state,
-        "rendererCDPState": _renderer_cdp_state(platform, target),
+        "rendererCDPState": _renderer_cdp_state(target, session),
     }
     if session is not None:
         value["endpoint"] = session.endpoint
         value["desktopProcessID"] = session.desktop_pid
+        if session.engine_override_sha256 is not None:
+            value["engineOverrideSha256"] = session.engine_override_sha256
         if session.responses_route_fingerprint is not None:
             value["responsesRouteFingerprint"] = session.responses_route_fingerprint
         if session.model_list_overlay_fingerprint is not None:
@@ -840,7 +889,8 @@ def quit_target(
     platform: DesktopPlatform,
     target_id: str,
     *,
-    timeout: float = 15.0,
+    timeout: float = NORMAL_QUIT_TIMEOUT_SECONDS,
+    expected_desktop_pid: int | None = None,
 ) -> dict[str, Any]:
     """Request a normal quit for one exact canonical/default desktop target.
 
@@ -851,6 +901,11 @@ def quit_target(
     target = _target(platform, target_id)
     session = target_session(platform, target_id)
     state = session.get("state")
+    if expected_desktop_pid is not None and (
+        type(expected_desktop_pid) is not int or expected_desktop_pid <= 0
+        or session.get("desktopProcessID") != expected_desktop_pid
+    ):
+        raise RuntimeError("Desktop changed since confirmation; current application preserved")
     if state in {"available", "unavailable", "unsupported"}:
         return session
     desktop_pid = session.get("desktopProcessID")
@@ -888,19 +943,26 @@ def _private_command(platform: DesktopPlatform, command: str, target_id: str, *e
     return values
 
 
+def _owned_process_options() -> dict[str, Any]:
+    # A lifecycle signal to the supervisor must not reach Codex before the supervisor has
+    # closed its Desktop. Codex treats that signal as an irreversible admission drain.
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
 def _start_detached(command: list[str]) -> subprocess.Popen[bytes]:
     options: dict[str, Any] = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
+        **_owned_process_options(),
     }
     if os.name == "nt":
         options["creationflags"] = (
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             | getattr(subprocess, "DETACHED_PROCESS", 0)
         )
-    else:
-        options["start_new_session"] = True
     return subprocess.Popen(command, **options)
 
 
@@ -911,6 +973,7 @@ def _wait_for_session(
     expected_responses_route_fingerprint: str | None = None,
     expect_renderer_cdp: bool = False,
     timeout: float = SESSION_START_TIMEOUT_SECONDS,
+    startup_process: subprocess.Popen[bytes] | None = None,
 ) -> TargetSession:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -928,6 +991,8 @@ def _wait_for_session(
                     f"Canonical target runtime started without renderer CDP: {target_id}"
                 )
             return session
+        if startup_process is not None and startup_process.poll() is not None:
+            raise RuntimeError(f"Canonical target supervisor exited before readiness: {target_id}")
         time.sleep(0.1)
     raise RuntimeError(f"Canonical target runtime did not become ready: {target_id}")
 
@@ -938,11 +1003,16 @@ def launch_target(
     *,
     responses_route: ResponsesRoute | None = None,
     model_list_overlay: ModelListOverlay | None = None,
+    startup_model_catalog: bool = False,
     renderer_cdp: bool = False,
 ) -> TargetSession:
     target = _target(platform, target_id)
     existing = load_session(platform, _metadata(platform), target_id)
+    engine = codex_engine_override()
+    engine_sha256 = engine[1] if engine else None
     if existing is not None:
+        if existing.engine_override_sha256 != engine_sha256:
+            raise RuntimeError("Target is already running with a different Codex engine; quit it normally once")
         if responses_route is not None and existing.responses_route_fingerprint != responses_route.fingerprint:
             raise RuntimeError(
                 f"Target is already running with a different Responses route; quit it normally once: {target_id}"
@@ -966,11 +1036,7 @@ def launch_target(
         raise RuntimeError(
             f"Target is already running outside the canonical runtime; quit it normally once: {target_id}"
         )
-    if target.get("managed") is True:
-        index = target.get("profileIndex")
-        if not isinstance(index, int):
-            raise RuntimeError(f"Managed target has no profile index: {target_id}")
-        Profile(index=index, platform=platform).prepare_launch()
+    # The claim-owning supervisor is the sole writer of launch preparation.
     descriptor = descriptor_path(_metadata(platform), target_id)
     try:
         descriptor.unlink()
@@ -986,22 +1052,28 @@ def launch_target(
         ))
         if responses_route.runtime_header_name:
             extra.extend(("--responses-runtime-header-name", responses_route.runtime_header_name))
+        if responses_route.model_catalog_json is not None:
+            extra.extend(("--model-catalog-json", responses_route.model_catalog_json))
     if model_list_overlay is not None:
         extra.extend((
             "--model-list-overlay-url", model_list_overlay.url,
             "--model-list-overlay-env-key", model_list_overlay.env_key,
         ))
+    if startup_model_catalog:
+        if model_list_overlay is None:
+            raise ValueError("Startup model catalog requires a model overlay")
+        extra.append("--startup-model-catalog")
     if renderer_cdp:
         extra.append("--renderer-cdp")
     receipt = None
-    if target.get("managed") is True:
+    if target.get("managed") is True and isinstance(target.get("profileIndex"), int):
         receipt = UpdateLifecycleReceipt(
             platform, platform.layout(target["profileIndex"]), "launch_runtime",
         )
     try:
         if receipt is not None:
             receipt.stage("runtime_spawn")
-        _start_detached(_private_command(platform, "_supervise-target", target_id, *extra))
+        startup_process = _start_detached(_private_command(platform, "_supervise-target", target_id, *extra))
         if receipt is not None:
             receipt.stage("runtime_session_wait")
         session = _wait_for_session(
@@ -1009,66 +1081,15 @@ def launch_target(
             target_id,
             expected_responses_route_fingerprint=(responses_route.fingerprint if responses_route else None),
             expect_renderer_cdp=renderer_cdp,
+            startup_process=startup_process,
         )
+        if session.engine_override_sha256 != engine_sha256:
+            raise RuntimeError("Canonical target runtime started with a different Codex engine")
         return session
     except Exception as error:
         if receipt is not None:
             receipt.failure(error)
         raise
-
-
-def _launch_target_attached(
-    platform: DesktopPlatform,
-    target_id: str,
-    app_server_url: str,
-    *,
-    renderer_cdp_port: int | None = None,
-) -> None:
-    app_server_url = _validate_loopback_websocket_url(app_server_url)
-    target = _target(platform, target_id)
-    if target.get("state") != "stopped":
-        raise RuntimeError(f"Target must be stopped before canonical runtime launch: {target_id}")
-    if target_id == "default":
-        platform.launch_default(
-            platform.resolve_executable(),
-            app_server_url=app_server_url,
-            renderer_cdp_port=renderer_cdp_port,
-        )
-        return
-    index = target.get("profileIndex")
-    if not isinstance(index, int):
-        raise RuntimeError(f"Managed target has no profile index: {target_id}")
-    Profile(index=index, platform=platform).launch(
-        app_server_url=app_server_url,
-        renderer_cdp_port=renderer_cdp_port,
-    )
-
-
-def serve_target(
-    platform: DesktopPlatform,
-    target_id: str,
-    listen_url: str,
-    *,
-    responses_route: ResponsesRoute | None = None,
-) -> None:
-    listen_url = _validate_loopback_websocket_url(listen_url)
-    target = _target(platform, target_id)
-    if target.get("sharedAppServerSupported") is not True:
-        raise RuntimeError(f"Target does not expose a supported shared app-server runtime: {target_id}")
-    if target.get("state") != "stopped":
-        raise RuntimeError(f"Target must be stopped before serving a shared app-server: {target_id}")
-    if target_id == "default":
-        codex_home = platform.default_codex_home()
-    else:
-        index = target.get("profileIndex")
-        if not isinstance(index, int):
-            raise RuntimeError(f"Managed target has no profile index: {target_id}")
-        profile = Profile(index=index, platform=platform)
-        manifest = profile.load()
-        if not manifest.get("ready"):
-            raise RuntimeError(f"Target is not ready: {target_id}")
-        codex_home = profile.codex
-    platform.run_app_server(codex_home, listen_url, responses_route=responses_route)
 
 
 def _allocate_loopback_endpoint() -> str:
@@ -1104,53 +1125,174 @@ def _terminate_owned(process: subprocess.Popen[bytes], timeout: float = 5.0) -> 
     process.wait()
 
 
+@contextmanager
+def _supervisor_signals():
+    def terminate(signum, _frame):
+        # Unwind through the owned-process cleanup instead of leaving a stale descriptor
+        # and a draining backend behind when Python's default SIGTERM action exits.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise SystemExit(128 + signum)
+
+    handlers = {signal.SIGTERM: terminate}
+    if hasattr(signal, "SIGHUP"):
+        # This supervisor is detached and lifecycle-bound to Desktop, not its launcher shell.
+        handlers[signal.SIGHUP] = signal.SIG_IGN
+    previous = {kind: signal.getsignal(kind) for kind in handlers}
+    try:
+        for kind, handler in handlers.items():
+            signal.signal(kind, handler)
+        yield
+    finally:
+        for kind, handler in previous.items():
+            signal.signal(kind, handler)
+
+
 def supervise_target(
     platform: DesktopPlatform,
     target_id: str,
     *,
     responses_route: ResponsesRoute | None = None,
     model_list_overlay: ModelListOverlay | None = None,
+    startup_model_catalog: bool = False,
     renderer_cdp: bool = False,
 ) -> int:
+    with _supervisor_signals():
+        return _supervise_target(
+            platform, target_id, responses_route=responses_route,
+            model_list_overlay=model_list_overlay, startup_model_catalog=startup_model_catalog, renderer_cdp=renderer_cdp,
+        )
+
+
+def _supervise_target(
+    platform: DesktopPlatform,
+    target_id: str,
+    *,
+    responses_route: ResponsesRoute | None = None,
+    model_list_overlay: ModelListOverlay | None = None,
+    startup_model_catalog: bool = False,
+    renderer_cdp: bool = False,
+) -> int:
+    engine = codex_engine_override()
+    engine_sha256 = engine[1] if engine else None
+    if engine_sha256:
+        # Children recheck this same byte identity immediately before executing the override.
+        os.environ["CODEX_EXECUTABLE_SHA256"] = engine_sha256
     claim = acquire_runtime_claim(platform, _metadata(platform), target_id)
     backend: subprocess.Popen[bytes] | None = None
     desktop: subprocess.Popen[bytes] | None = None
+    desktop_pid: int | None = None
+    desktop_executable: Path | None = None
+    supervisor_receipt: UpdateLifecycleReceipt | None = None
+    catalog_directory: tempfile.TemporaryDirectory[str] | None = None
     route_proxy: RoutePreservingAppServerProxy | None = None
     descriptor = descriptor_path(_metadata(platform), target_id)
+    startup_deadline = time.monotonic() + SUPERVISOR_STARTUP_TIMEOUT_SECONDS
     try:
         target = _target(platform, target_id)
         if target.get("state") != "stopped":
             raise RuntimeError(f"Target must be stopped before canonical runtime supervision: {target_id}")
-        startup_deadline = time.monotonic() + SUPERVISOR_STARTUP_TIMEOUT_SECONDS
+        def terminate_desktop() -> None:
+            if desktop is None or desktop.poll() is not None:
+                return
+            # A platform launcher may wait for an application owned by the OS rather
+            # than exec it. Never mistake that waiter PID for the actual Desktop,
+            # or orphan a still-running GUI by forcibly ending open(1) -W.
+            if platform.platform_id == "macos" and desktop_pid is None:
+                return  # GUI identity unresolved; even the waiter remains untouched
+            if desktop_pid is not None and desktop_pid != desktop.pid:
+                if desktop_executable is None:
+                    return
+                try:
+                    if platform.pid_alive(desktop_pid):
+                        platform.request_desktop_quit(desktop_executable, desktop_pid)
+                        try:
+                            desktop.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            return  # user GUI did not quit: fail closed
+                except (OSError, RuntimeError):
+                    return  # ambiguous GUI ownership: leave it for user recovery
+                return
+            _terminate_owned(desktop)
+        profile: Profile | None = None
+        permission_diagnostics_enabled = False
+        if target.get("managed") is True:
+            profile_index = target.get("profileIndex")
+            if not isinstance(profile_index, int):
+                raise RuntimeError(f"Managed target has no profile index: {target_id}")
+            profile = Profile(index=profile_index, platform=platform)
+            supervisor_receipt = UpdateLifecycleReceipt(
+                platform, profile.layout, "launch_supervisor",
+            )
+            supervisor_receipt.stage("supervisor_managed_prepare")
+            permission_diagnostics_enabled = profile.tool_lifecycle_diagnostics_enabled(profile.load())
+            desktop_executable = profile.prepare_launch()
+        else:
+            desktop_executable = platform.resolve_executable()
+        diagnostic_write_lock = threading.Lock()
+
+        def write_permission_summary(summary: dict) -> None:
+            if profile is None:
+                raise RuntimeError("Permission diagnostics require a managed profile")
+            with diagnostic_write_lock:
+                write_diagnostic_artifact(profile.meta, profile.index, summary)
+
+        def write_transport_summary(summary: dict) -> None:
+            with diagnostic_write_lock:
+                write_runtime_diagnostic_artifact(_metadata(platform), target_id, os.getpid(), summary)
+
+        if time.monotonic() >= startup_deadline:
+            raise RuntimeError("Canonical runtime preparation exceeded startup deadline")
         backend_endpoint = _allocate_loopback_endpoint()
         endpoint = backend_endpoint
-        if responses_route is not None:
+        if responses_route is not None or permission_diagnostics_enabled:
             endpoint = _allocate_loopback_endpoint()
             while endpoint == backend_endpoint:
                 endpoint = _allocate_loopback_endpoint()
-        route_args: list[str] = []
-        if responses_route is not None:
-            route_args.extend((
-                "--responses-base-url",
-                responses_route.base_url,
-                "--responses-env-key",
-                responses_route.env_key,
-            ))
-            if responses_route.runtime_header_name:
-                route_args.extend(("--responses-runtime-header-name", responses_route.runtime_header_name))
+        if startup_model_catalog:
+            if supervisor_receipt is not None:
+                supervisor_receipt.stage("supervisor_catalog")
+            if responses_route is None or model_list_overlay is None:
+                raise ValueError("Startup model catalog requires routing and model overlay")
+            codex_home = platform.default_codex_home() if target_id == "default" else profile.codex
+            native_executable = platform.resolve_codex_executable(desktop_executable)
+            native_environment = dict(os.environ, CODEX_HOME=str(codex_home))
+            if native_environment.get(responses_route.runtime_env_key) == native_environment.get(responses_route.env_key):
+                native_environment.pop(responses_route.runtime_env_key, None)
+            # The official engine owns account access. Never read credentials or invent Native rows.
+            native_result = subprocess.run(
+                [str(native_executable), "debug", "models"], env=native_environment,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20, check=True,
+            )
+            if len(native_result.stdout) > 16 * 1024 * 1024:
+                raise ValueError("Native model catalog exceeds bound")
+            catalog = model_list_overlay.apply(json.loads(native_result.stdout))
+            if not isinstance(catalog, dict) or not isinstance(catalog.get("models"), list) or not catalog["models"]:
+                raise ValueError("Startup model catalog callback is invalid")
+            catalog_directory = tempfile.TemporaryDirectory(prefix="plura-model-catalog-")
+            catalog_path = Path(catalog_directory.name) / "models.json"
+            atomic_write_json(catalog_path, catalog)
+            responses_route = replace(responses_route, model_catalog_json=str(catalog_path))
+        codex_home = platform.default_codex_home() if profile is None else profile.codex
+        # The lifecycle owner validates the selected engine immediately before spawning
+        # it. Native is the direct owned child, so another CLI discovery pass is unnecessary.
+        launch = platform.app_server_launch(
+            codex_home,
+            backend_endpoint,
+            chatgpt_executable=desktop_executable,
+            responses_route=responses_route,
+        )
+        if supervisor_receipt is not None:
+            supervisor_receipt.stage("supervisor_backend_spawn")
         backend = subprocess.Popen(
-            _private_command(
-                platform,
-                "_serve-target",
-                target_id,
-                "--listen",
-                backend_endpoint,
-                *route_args,
-            ),
+            list(launch.command),
+            env=launch.environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            **_owned_process_options(),
         )
+        if supervisor_receipt is not None:
+            supervisor_receipt.stage("supervisor_backend_ready")
         deadline = min(startup_deadline, time.monotonic() + 10.0)
         while time.monotonic() < deadline:
             if backend.poll() is not None:
@@ -1161,12 +1303,18 @@ def supervise_target(
         else:
             raise RuntimeError("Canonical app-server readiness timeout")
 
-        if responses_route is not None:
+        if responses_route is not None or permission_diagnostics_enabled:
+            if supervisor_receipt is not None:
+                supervisor_receipt.stage("supervisor_proxy_ready")
             route_proxy = RoutePreservingAppServerProxy(
                 endpoint,
                 backend_endpoint,
                 responses_route,
+                transport_failure=write_transport_summary,
                 **({"model_list_overlay": model_list_overlay} if model_list_overlay else {}),
+                **({"permission_diagnostics": lambda: PermissionDiagnostics(
+                    write_permission_summary
+                )} if permission_diagnostics_enabled else {}),
             )
             route_proxy.start()
             deadline = min(startup_deadline, time.monotonic() + 5.0)
@@ -1185,22 +1333,40 @@ def supervise_target(
             if renderer_cdp_port is not None
             else None
         )
-        desktop_args = ["--app-server-url", endpoint]
-        if renderer_cdp_port is not None:
-            desktop_args.extend(("--renderer-cdp-port", str(renderer_cdp_port)))
-
+        # Revalidate Desktop immediately before direct spawn; no second CLI repeats
+        # discovery/preparation. Backend and Desktop remain independently proven.
+        rust_log = None
+        if profile is not None:
+            # Verify the prepared runtime again at use; do not refresh/write twice.
+            checked_executable = _target_executable(platform, target)
+            if checked_executable != desktop_executable:
+                raise RuntimeError("Prepared Desktop executable changed during startup")
+            if permission_diagnostics_enabled:
+                rust_log = platform.tool_lifecycle_diagnostic_rust_log()
+                if rust_log is None:
+                    raise RuntimeError("Tool lifecycle diagnostics are unsupported")
+        else:
+            desktop_executable = platform.resolve_executable()
+        desktop_launch = platform.desktop_launch_spec(
+            desktop_executable, layout=profile.layout if profile else None,
+            app_server_url=endpoint, rust_log=rust_log,
+            renderer_cdp_port=renderer_cdp_port,
+        )
+        if supervisor_receipt is not None:
+            supervisor_receipt.stage("supervisor_gui_spawn")
         desktop = subprocess.Popen(
-            _private_command(
-                platform,
-                "_launch-target-attached",
-                target_id,
-                *desktop_args,
-            ),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            list(desktop_launch.command), env=desktop_launch.environment, cwd=desktop_launch.cwd,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            **_owned_process_options(),
+        )
+        if supervisor_receipt is not None:
+            supervisor_receipt.stage("supervisor_gui_identity")
+        desktop_pid = platform.supervised_desktop_pid(
+            desktop_executable, desktop, deadline=startup_deadline
         )
         if renderer_cdp_port is not None:
+            if supervisor_receipt is not None:
+                supervisor_receipt.stage("supervisor_renderer_ready")
             deadline = startup_deadline
             while time.monotonic() < deadline:
                 if desktop.poll() is not None:
@@ -1212,6 +1378,8 @@ def supervise_target(
                 time.sleep(0.1)
             else:
                 raise RuntimeError("Renderer CDP readiness timeout")
+        if supervisor_receipt is not None:
+            supervisor_receipt.stage("supervisor_session_commit")
         atomic_write_session(
             descriptor,
             TargetSession(
@@ -1219,12 +1387,15 @@ def supervise_target(
                 endpoint=endpoint,
                 supervisor_pid=os.getpid(),
                 backend_pid=backend.pid,
-                desktop_pid=desktop.pid,
+                desktop_pid=desktop_pid,
+                engine_override_sha256=engine_sha256,
                 responses_route_fingerprint=(responses_route.fingerprint if responses_route else None),
                 model_list_overlay_fingerprint=(model_list_overlay.fingerprint if model_list_overlay else None),
                 renderer_cdp_endpoint=renderer_cdp_endpoint,
             ),
         )
+        if supervisor_receipt is not None:
+            supervisor_receipt.stage("supervisor_operating")
         while True:
             backend_status = backend.poll()
             desktop_status = desktop.poll()
@@ -1234,16 +1405,20 @@ def supervise_target(
             time.sleep(0.2)
         if route_proxy is not None and not route_proxy.is_alive:
             if desktop.poll() is None:
-                _terminate_owned(desktop)
+                terminate_desktop()
             if backend.poll() is None:
                 _terminate_owned(backend)
             if route_proxy.fatal_error is not None:
                 raise RuntimeError("Canonical app-server route proxy failed") from route_proxy.fatal_error
         if backend.poll() is not None and desktop.poll() is None:
-            _terminate_owned(desktop)
+            terminate_desktop()
         if desktop.poll() is not None and backend.poll() is None:
             _terminate_owned(backend)
         return desktop.returncode if desktop.returncode is not None else (backend.returncode or 0)
+    except Exception as error:
+        if supervisor_receipt is not None:
+            supervisor_receipt.failure(error)
+        raise
     finally:
         try:
             descriptor.unlink()
@@ -1251,8 +1426,12 @@ def supervise_target(
             pass
         if route_proxy is not None:
             route_proxy.close()
-        if desktop is not None and desktop.poll() is None:
-            _terminate_owned(desktop)
-        if backend is not None and backend.poll() is None:
-            _terminate_owned(backend)
-        release_runtime_claim(claim)
+        try:
+            if desktop is not None and desktop.poll() is None:
+                terminate_desktop()
+        finally:
+            if backend is not None and backend.poll() is None:
+                _terminate_owned(backend)
+            if catalog_directory is not None:
+                catalog_directory.cleanup()
+            release_runtime_claim(claim)

@@ -16,9 +16,39 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 from plura_desktop import profile_diagnostics as module
+from plura_desktop.diagnostic_artifacts import read_diagnostic_artifacts, write_diagnostic_artifact
 
 
 class ProfileDiagnosticTests(unittest.TestCase):
+    def test_status_artifact_reader_is_bounded_and_refuses_symlinks(self):
+        with tempfile.TemporaryDirectory() as root:
+            metadata = self._install_artifact_fixture(Path(root))
+            self.assertEqual(read_diagnostic_artifacts(metadata, 2), [])
+            write_diagnostic_artifact(metadata, 2, {"kind": "permission-rpc", "version": 1})
+            self.assertEqual(read_diagnostic_artifacts(metadata, 2)[0]["kind"], "permission-rpc")
+            summary = next((metadata / "diagnostics/profile-2/incidents").iterdir()) / "summary.json"
+            summary.write_bytes(b"x" * (256 * 1024 + 1))
+            with self.assertRaises(RuntimeError):
+                read_diagnostic_artifacts(metadata, 2)
+            summary.unlink()
+            summary.symlink_to(metadata / "profile-2-install-manifest.json")
+            with self.assertRaises(RuntimeError):
+                read_diagnostic_artifacts(metadata, 2)
+
+    def test_process_identity_uses_canonical_target_session_for_managed_clone(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            platform = object()
+            with patch.object(module, "current_platform", return_value=platform) as resolve_platform, \
+                 patch.object(module, "target_session", return_value={"desktopProcessID": 123}) as session:
+                self.assertEqual(module.profile_main_pids(home, 2), [123])
+                resolve_platform.assert_called_once_with(home=home)
+                session.assert_called_once_with(platform, "local.plura-desktop.profile2")
+            for pid in [None, True, 0, -1, "123"]:
+                with patch.object(module, "current_platform", return_value=platform), \
+                     patch.object(module, "target_session", return_value={"desktopProcessID": pid}):
+                    self.assertEqual(module.profile_main_pids(home, 1), [])
+
     def test_help_and_version_are_available_before_macos_runtime_guard(self):
         with patch.object(module.sys, "platform", "linux"):
             output = io.StringIO()
@@ -80,6 +110,16 @@ class ProfileDiagnosticTests(unittest.TestCase):
             rendered = summary.read_text(encoding="utf-8")
             self.assertIn('"schema": 1', rendered)
             self.assertIn('"retentionMaxIncidents": 2', rendered)
+
+    def test_retention_keeps_newest_write_with_reverse_same_second_ids(self):
+        with tempfile.TemporaryDirectory(prefix="profile-diagnostic-order-", dir=ROOT) as root:
+            home = Path(root)
+            self._install_artifact_fixture(home)
+            ids = ["20260928T120000Z-ffffffff", "20260928T120000Z-00000000"]
+            for incident in ids:
+                module.write_diagnostic_artifact(home, 2, {"kind": "permission-rpc"},
+                    incident_id=incident, max_incidents=1)
+            self.assertEqual([p.name for p in module.diagnostics_root(home, 2).iterdir()], ids[1:])
 
     def test_diagnostic_artifact_size_cap_fails_before_creating_storage(self):
         with tempfile.TemporaryDirectory(prefix="profile-diagnostic-artifact-cap-", dir=ROOT) as root:
