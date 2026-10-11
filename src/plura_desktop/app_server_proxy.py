@@ -11,12 +11,49 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .routing import ResponsesRoute
+from .model_list_overlay import ModelListOverlay
 
 
 _WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _MAX_HTTP_HEADER_BYTES = 64 * 1024
 _MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 _ROUTED_THREAD_METHODS = frozenset({"thread/start", "thread/resume", "thread/fork"})
+
+
+def _message_id(value: Any) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    encoded = json.dumps(value, separators=(",", ":"))
+    return encoded if len(encoded) <= 128 else None
+
+
+def model_list_request_id(message: str) -> str | None:
+    try:
+        value = json.loads(message)
+    except json.JSONDecodeError:
+        return None
+    return _message_id(value.get("id")) if isinstance(value, dict) and value.get("method") == "model/list" else None
+
+
+def overlay_model_list_response(message: str, pending: set[str], overlay: ModelListOverlay) -> str:
+    try:
+        value = json.loads(message)
+    except json.JSONDecodeError:
+        return message
+    if not isinstance(value, dict):
+        return message
+    identity = _message_id(value.get("id"))
+    if identity is None or identity not in pending:
+        return message
+    pending.remove(identity)
+    if "result" not in value:
+        return message
+    try:
+        result = overlay.apply(value["result"])
+        return json.dumps({**value, "result": result}, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        # The callback is optional provider projection; preserve the first-party Native catalog.
+        return message
 
 
 class AppServerProxyError(RuntimeError):
@@ -49,17 +86,10 @@ def rewrite_app_server_request(message: str, route: ResponsesRoute) -> str:
     else:
         raise AppServerProxyError("Routed app-server request has non-object config")
 
-    overlay = route.thread_config_overlay()
     existing_providers = config.get("model_providers")
-    if existing_providers is None:
-        providers: dict[str, Any] = {}
-    elif isinstance(existing_providers, dict):
-        providers = dict(existing_providers)
-    else:
+    if existing_providers is not None and not isinstance(existing_providers, dict):
         raise AppServerProxyError("Routed app-server request has non-object model_providers")
-    providers.update(overlay["model_providers"])
-    config["model_provider"] = overlay["model_provider"]
-    config["model_providers"] = providers
+    config.update(route.thread_config_overlay())
 
     routed_params = dict(params)
     routed_params["config"] = config
@@ -245,10 +275,11 @@ def _connect_upstream(endpoint: str, requested_protocols: str | None) -> tuple[s
 class RoutePreservingAppServerProxy:
     """Loopback WebSocket proxy that preserves one launch-time Responses route per thread."""
 
-    def __init__(self, listen_url: str, upstream_url: str, route: ResponsesRoute) -> None:
+    def __init__(self, listen_url: str, upstream_url: str, route: ResponsesRoute, *, model_list_overlay: ModelListOverlay | None = None) -> None:
         self.listen_url = listen_url
         self.upstream_url = upstream_url
         self.route = route
+        self.model_list_overlay = model_list_overlay
         self._listener: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -372,6 +403,8 @@ class RoutePreservingAppServerProxy:
             downstream_peer = _WebSocketPeer(client, send_masked=False, expect_masked=True)
             upstream_peer = _WebSocketPeer(upstream, send_masked=True, expect_masked=False)
             done = threading.Event()
+            pending_model_lists: set[str] = set()
+            pending_lock = threading.Lock()
 
             def pump(source: _WebSocketPeer, destination: _WebSocketPeer, *, rewrite: bool) -> None:
                 try:
@@ -380,9 +413,21 @@ class RoutePreservingAppServerProxy:
                         if message is None:
                             return
                         opcode, payload = message
-                        if rewrite and opcode == 0x1:
+                        if opcode == 0x1 and rewrite:
                             text = payload.decode("utf-8")
+                            if self.model_list_overlay is not None:
+                                identity = model_list_request_id(text)
+                                if identity is not None:
+                                    with pending_lock:
+                                        if len(pending_model_lists) < 128:
+                                            pending_model_lists.add(identity)
                             payload = rewrite_app_server_request(text, self.route).encode("utf-8")
+                        elif opcode == 0x1 and self.model_list_overlay is not None:
+                            with pending_lock:
+                                text = overlay_model_list_response(
+                                    payload.decode("utf-8"), pending_model_lists, self.model_list_overlay,
+                                )
+                            payload = text.encode("utf-8")
                         destination.send_frame(opcode, payload)
                 except (EOFError, OSError, UnicodeDecodeError, AppServerProxyError):
                     return

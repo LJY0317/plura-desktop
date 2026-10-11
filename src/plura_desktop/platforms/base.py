@@ -142,11 +142,19 @@ class DesktopPlatform(ABC):
             raise RuntimeError(
                 f"Responses route credential environment variable is missing: {responses_route.env_key}"
             )
+        if responses_route is not None:
+            credential = env[responses_route.env_key]
+            inherited = env.get(responses_route.runtime_env_key)
+            if inherited and inherited != credential:
+                raise RuntimeError(
+                    f"Responses route cannot replace an existing {responses_route.runtime_env_key} value"
+                )
+            env[responses_route.runtime_env_key] = credential
         command = [
             str(codex),
+            "app-server",
             "-c",
             "features.code_mode_host=true",
-            "app-server",
             "--analytics-default-enabled",
             "-c",
             "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
@@ -154,7 +162,7 @@ class DesktopPlatform(ABC):
             listen_url,
         ]
         if responses_route is not None:
-            command[1:1] = responses_route.codex_config_args()
+            command[2:2] = responses_route.codex_config_args()
         os.execve(str(codex), command, env)
 
     def show_launch_error(self, layout: ProfileLayout, error: Exception) -> None:

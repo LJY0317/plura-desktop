@@ -9,7 +9,9 @@ from urllib.parse import urlsplit
 
 
 _ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
-_PROVIDER_ID = "external_responses_runtime"
+_PROVIDER_ID = "openai"
+_RUNTIME_HEADER = "OpenAI-Organization"
+_RUNTIME_ENV_KEY = "OPENAI_ORGANIZATION"
 
 
 def _toml_string(value: str) -> str:
@@ -24,9 +26,12 @@ class ResponsesRoute:
     base_url: str
     env_key: str
     fingerprint: str
+    runtime_header_name: str = _RUNTIME_HEADER
 
     @classmethod
-    def create(cls, base_url: str, env_key: str, credential: str) -> "ResponsesRoute":
+    def create(
+        cls, base_url: str, env_key: str, credential: str, runtime_header_name: str | None = None
+    ) -> "ResponsesRoute":
         parsed = urlsplit(base_url)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}:
             raise ValueError("Responses route must use loopback http://")
@@ -40,6 +45,10 @@ class ResponsesRoute:
             raise ValueError("Responses route env key must be an uppercase environment variable name")
         if len(credential) < 32:
             raise ValueError("Responses route credential must contain at least 32 characters")
+        if runtime_header_name is None:
+            runtime_header_name = _RUNTIME_HEADER
+        if runtime_header_name != _RUNTIME_HEADER:
+            raise ValueError(f"Responses route runtime header must be {_RUNTIME_HEADER}")
         normalized = f"http://{parsed.hostname}:{parsed.port}/v1"
         credential_hash = hashlib.sha256(credential.encode("utf-8")).hexdigest()
         material = json.dumps(
@@ -48,6 +57,7 @@ class ResponsesRoute:
                 "credentialHash": credential_hash,
                 "envKey": env_key,
                 "provider": _PROVIDER_ID,
+                "runtimeHeaderName": runtime_header_name,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -56,17 +66,13 @@ class ResponsesRoute:
             base_url=normalized,
             env_key=env_key,
             fingerprint=hashlib.sha256(material).hexdigest(),
+            runtime_header_name=runtime_header_name,
         )
 
     def codex_config_args(self) -> tuple[str, ...]:
-        prefix = f"model_providers.{_PROVIDER_ID}"
         values = (
             f"model_provider={_toml_string(_PROVIDER_ID)}",
-            f"{prefix}.name={_toml_string('External Responses Runtime')}",
-            f"{prefix}.base_url={_toml_string(self.base_url)}",
-            f"{prefix}.wire_api={_toml_string('responses')}",
-            f"{prefix}.env_key={_toml_string(self.env_key)}",
-            f"{prefix}.requires_openai_auth=false",
+            f"openai_base_url={_toml_string(self.base_url)}",
         )
         result: list[str] = []
         for value in values:
@@ -76,18 +82,11 @@ class ResponsesRoute:
     def thread_config_overlay(self) -> dict[str, Any]:
         """Return the secret-free thread config needed to preserve this route."""
 
-        return {
-            "model_provider": _PROVIDER_ID,
-            "model_providers": {
-                _PROVIDER_ID: {
-                    "name": "External Responses Runtime",
-                    "base_url": self.base_url,
-                    "wire_api": "responses",
-                    "env_key": self.env_key,
-                    "requires_openai_auth": False,
-                }
-            },
-        }
+        return {"model_provider": _PROVIDER_ID, "openai_base_url": self.base_url}
+
+    @property
+    def runtime_env_key(self) -> str:
+        return _RUNTIME_ENV_KEY
 
     @property
     def provider_id(self) -> str:

@@ -267,7 +267,7 @@ plura-desktop launch-target --target local.plura-desktop.profile2
 
 `launch-target` 자체가 canonical managed-profile 실행 경로입니다. 설치된 `ChatGPT Profile N` selector, 메뉴바, 향후 controller는 모두 이 명령으로 수렴해야 합니다. stopped target을 시작하면 하나의 app-server + Desktop pair를 만들고, 이미 canonical session이 살아 있으면 그대로 재사용합니다. 과거 방식으로 private Desktop이 실행 중이면 두 번째 writer를 만들지 않고 한 번의 정상 종료를 요구합니다.
 
-launch-time Responses route가 활성화된 경우 supervisor는 실제 Codex app-server를 private loopback endpoint에 두고, Desktop/controller에는 별도의 loopback WebSocket endpoint를 노출합니다. ChatGPT Desktop은 app-server 연결 후 user config를 reload할 수 있으므로 launch-time provider가 사라지지 않도록, 노출 endpoint는 thread config를 받는 lifecycle 요청인 `thread/start`, `thread/resume`, `thread/fork`에만 같은 **secret-free** provider overlay를 적용합니다. 그 외 app-server 메시지는 그대로 전달합니다. 사용자 `config.toml`은 수정하지 않고, 공식 ChatGPT 앱도 변경하지 않으며, credential 값은 소유 backend process 환경 밖으로 내보내지 않습니다.
+launch-time Responses route가 활성화된 경우 supervisor는 실제 Codex app-server를 private loopback endpoint에 두고, Desktop/controller에는 별도의 loopback WebSocket endpoint를 노출합니다. 대화의 공급자 ID는 내장 `openai`로 유지하므로 route 제거 후 일반 Desktop에서도 재개할 수 있습니다. ChatGPT Desktop의 config reload 이후에도 route를 유지하기 위해 노출 endpoint는 `thread/start`, `thread/resume`, `thread/fork`에만 secret-free `openai_base_url`과 공급자 선택을 적용합니다. 그 외 app-server 메시지는 그대로 전달합니다. 로컬 Responses 서버는 내장 공급자가 보내는 `OpenAI-Organization` 헤더로 credential을 검증하고, Native upstream 전달 전에 이 헤더를 제거해야 합니다. 기존 `OPENAI_ORGANIZATION` 값이 있으면 덮어쓰지 않고 실행을 거부합니다. 사용자 `config.toml`과 공식 ChatGPT 앱은 수정하지 않습니다.
 
 원격/브리지 통합이 live runtime endpoint가 필요하면 다음 local-only contract를 사용합니다.
 

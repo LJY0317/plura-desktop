@@ -20,7 +20,10 @@ from plura_desktop.app_server_proxy import (  # noqa: E402
     _read_http_head,
     _websocket_accept,
     rewrite_app_server_request,
+    model_list_request_id,
+    overlay_model_list_response,
 )
+from plura_desktop.model_list_overlay import ModelListOverlay  # noqa: E402
 from plura_desktop.routing import ResponsesRoute  # noqa: E402
 
 
@@ -32,6 +35,35 @@ def _free_ws_endpoint() -> str:
 
 
 class AppServerProxyTests(unittest.TestCase):
+    def test_model_list_overlay_is_exact_and_failure_preserves_native_result(self) -> None:
+        class Callback:
+            calls = 0
+
+            def apply(self, result: object) -> object:
+                self.calls += 1
+                return {"data": [*result["data"], {"id": "web"}]}
+
+        callback = Callback()
+        pending = {model_list_request_id('{"id":7,"method":"model/list","params":{}}')}
+        self.assertEqual(pending, {"7"})
+        native = '{"id":7,"result":{"data":[{"id":"native"}]}}'
+        augmented = json.loads(overlay_model_list_response(native, pending, callback))
+        self.assertEqual([row["id"] for row in augmented["result"]["data"]], ["native", "web"])
+        self.assertEqual(callback.calls, 1)
+        self.assertEqual(pending, set())
+        self.assertEqual(overlay_model_list_response(native, pending, callback), native)
+
+        class FailingCallback:
+            def apply(self, _result: object) -> object:
+                raise TimeoutError("callback unavailable")
+
+        self.assertEqual(overlay_model_list_response(native, {"7"}, FailingCallback()), native)
+        self.assertIsNone(model_list_request_id('{"id":7,"method":"turn/start"}'))
+
+    def test_model_list_overlay_rejects_non_loopback_callback(self) -> None:
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            ModelListOverlay.create("https://example.com/model-list-overlay", "TEST_KEY", "s" * 48)
+
     def test_proxy_normalizes_localhost_listener_to_literal_loopback(self):
         route = ResponsesRoute.create(
             "http://127.0.0.1:9000/v1",
@@ -68,24 +100,25 @@ class AppServerProxyTests(unittest.TestCase):
                             "threadId": "fixture-thread",
                             "config": {
                                 "service_tier": "default",
-                                "model_provider": "legacy_fixture",
+                                "model_provider": "external_responses_runtime",
                                 "model_providers": {
-                                    "legacy_fixture": {"name": "Legacy"},
+                                    "external_responses_runtime": {"name": "Legacy route"},
                                 },
                             },
-                            "modelProvider": "legacy_fixture",
+                            "modelProvider": "external_responses_runtime",
                         },
                     }
                 )
                 routed = json.loads(rewrite_app_server_request(source, self.route))
                 params = routed["params"]
-                self.assertEqual(params["config"]["model_provider"], "external_responses_runtime")
-                self.assertEqual(params["modelProvider"], "external_responses_runtime")
+                self.assertEqual(params["config"]["model_provider"], "openai")
+                self.assertEqual(params["config"]["openai_base_url"], self.route.base_url)
+                self.assertEqual(params["modelProvider"], "openai")
                 self.assertEqual(params["config"]["service_tier"], "default")
-                self.assertIn("legacy_fixture", params["config"]["model_providers"])
-                provider = params["config"]["model_providers"]["external_responses_runtime"]
-                self.assertEqual(provider["base_url"], self.route.base_url)
-                self.assertEqual(provider["env_key"], self.route.env_key)
+                self.assertEqual(
+                    params["config"]["model_providers"]["external_responses_runtime"],
+                    {"name": "Legacy route"},
+                )
                 self.assertNotIn(self.secret, json.dumps(routed))
 
         unrelated = '{"id":9,"method":"turn/start","params":{"threadId":"t"}}'
@@ -179,7 +212,8 @@ class AppServerProxyTests(unittest.TestCase):
             config = params["config"]
             assert isinstance(config, dict)
             self.assertEqual(config["service_tier"], "default")
-            self.assertEqual(config["model_provider"], "external_responses_runtime")
+            self.assertEqual(config["model_provider"], "openai")
+            self.assertEqual(config["openai_base_url"], self.route.base_url)
             self.assertNotIn(self.secret, json.dumps(routed))
         finally:
             proxy.close()
