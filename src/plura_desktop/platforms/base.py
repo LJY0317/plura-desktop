@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 import hashlib
 import os
 from pathlib import Path
@@ -169,13 +170,16 @@ class DesktopPlatform(ABC):
         *,
         source_fingerprint: dict[str, str],
         profile_running: bool,
-    ) -> None:
+    ) -> bool:
         """Prepare any platform-specific derived desktop runtime.
 
         Generic platforms launch the recorded executable directly. macOS overrides this to keep a
         byte-identical signed runtime bundle at a distinct application URL so LaunchServices can
         distinguish managed profiles from the official default ChatGPT application.
+        Return True only when derived runtime bytes were replaced. The caller
+        can then emit one abnormal-reconciliation diagnostic receipt.
         """
+        return False
 
     def profile_executable(
         self,
@@ -202,6 +206,27 @@ class DesktopPlatform(ABC):
     def tool_lifecycle_diagnostic_rust_log(self) -> str | None:
         """Return an adapter-scoped structural trace filter when explicitly supported."""
         return None
+
+    def selector_health(self, layout: ProfileLayout) -> str:
+        """Read-only app-launcher integrity, without loading user profile data.
+
+        Platform adapters with a structured desktop bundle may override this
+        probe. An 'unknown' result MUST NOT authorize automatic mutation.
+        """
+        return "unknown"
+
+    def managed_runtime_health(self, layout: ProfileLayout) -> str:
+        """Read-only derived-app integrity; not a signature/credential check."""
+        return "unknown"
+
+    def update_guard(self, layout: ProfileLayout):
+        """Scope update/launcher writes to one physical writer.
+
+        Platforms may implement an OS advisory lock on an existing owned
+        directory. Default adapters retain their original behavior; no
+        cross-platform global mutex is implied by this default.
+        """
+        return nullcontext()
 
     def write_control_cli(
         self,

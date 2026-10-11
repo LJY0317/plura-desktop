@@ -116,6 +116,8 @@ macOS에서는 `~/Applications/ChatGPT Profile 2.app`이 생성되며 이후 일
 
 Plura는 ChatGPT의 업데이트 UI를 patch하지 않습니다. 현재 macOS build처럼 Sparkle capability가 감지되면 managed launch에만 process-local Sparkle 기본값을 전달해 예약된 자동 update check/download를 억제하며, 공식 앱이나 default profile의 환경설정은 바꾸지 않습니다. 수동 upstream update UI는 남을 수 있습니다. 그 경로로 managed clone이 변경되더라도 해당 clone은 authoritative state가 아니므로 다음 managed launch 전에 공식 앱 기준으로 폐기·재생성합니다.
 
+**ChatGPT 업데이트는 기본 프로필 1에서만 진행하세요.** 프로필 2+에 수동 업데이트 버튼이 보여도 사용하지 않습니다. 바로가기 손상, 안전한 자동 복구, 갱신 중복 실행 방지 및 개인정보를 읽지 않는 진단 방법은 [macOS 업데이트·복구 안내](UPDATE_RECOVERY_AND_DIAGNOSTICS.ko.md)에 정리했습니다.
+
 ### 업데이트
 
 이 절은 위의 ChatGPT 앱 자체가 아니라 **Plura Desktop 자체 업데이트**를 설명합니다.

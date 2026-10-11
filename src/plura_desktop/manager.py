@@ -17,6 +17,7 @@ from .domain import (
     ManagedPath,
 )
 from .diagnostic_artifacts import validate_profile_diagnostic_tree
+from .lifecycle_diagnostics import UpdateLifecycleReceipt, latest_update_receipt
 from .io import atomic_write_json
 from .app_server_proxy import RoutePreservingAppServerProxy
 from .platforms import DesktopPlatform, current_platform
@@ -257,8 +258,12 @@ class Profile:
             descriptor = os.open(entry.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o700)
             os.close(descriptor)
 
-    def _write_platform_integration(self, executable: Path) -> None:
+    def _write_platform_integration(
+        self, executable: Path, *, receipt: UpdateLifecycleReceipt | None = None
+    ) -> None:
         runtime_executable = _frozen_runtime_executable()
+        if receipt is not None:
+            receipt.stage("selector_staging")
         self.platform.write_selector(
             self.layout,
             ENTRYPOINT_SOURCE,
@@ -266,6 +271,8 @@ class Profile:
             executable,
             runtime_executable=runtime_executable,
         )
+        if receipt is not None:
+            receipt.stage("control_runtime_prepare")
         self.platform.write_control_cli(
             self.meta,
             ENTRYPOINT_SOURCE,
@@ -320,25 +327,55 @@ class Profile:
         print(f"Installed Profile {self.index}: {self.layout.selector}")
 
     def refresh(self) -> None:
+        receipt = UpdateLifecycleReceipt(self.platform, self.layout, "refresh")
+        try:
+            receipt.stage("update_lock")
+            with self.platform.update_guard(self.layout):
+                self._refresh_under_guard(receipt)
+            receipt.complete()
+        except Exception as error:
+            receipt.failure(error)
+            raise
+
+    def _refresh_under_guard(self, receipt: UpdateLifecycleReceipt) -> None:
+        receipt.stage("manifest_validation")
         manifest = self.load()
         if not manifest["ready"]:
             raise RuntimeError("Installation incomplete; refusing refresh")
+        if receipt.before["selector"] == "unsafe" or receipt.before["runtime"] == "unsafe":
+            raise RuntimeError("Managed profile runtime or selector is unsafe; refusing refresh")
+        receipt.stage("official_source_validation")
         executable = self.platform.resolve_executable(manifest["app_executable"])
         source_fingerprint = self.platform.fingerprint(executable)
-        self.platform.prepare_profile_runtime(
+        changed = source_fingerprint != manifest["official_baseline"]
+        receipt.flag("officialSourceChanged", changed)
+        if changed or receipt.before["selector"] == "incomplete" or receipt.before["runtime"] == "incomplete":
+            receipt.note_reconciliation()
+        receipt.stage("managed_process_check")
+        running = bool(self.running())
+        receipt.flag("managedProfileRunning", running)
+        receipt.stage("runtime_prepare")
+        runtime_rebuilt = self.platform.prepare_profile_runtime(
             self.layout,
             executable,
             source_fingerprint=source_fingerprint,
-            profile_running=bool(self.running()),
+            profile_running=running,
         )
+        if runtime_rebuilt:
+            receipt.flag("managedRuntimeRebuilt", True)
+            receipt.note_reconciliation()
+        receipt.stage("ownership_validation")
         before = {str(entry.path): self.platform.identity(entry.path) for entry in self.layout.managed}
-        self._write_platform_integration(executable)
+        self._write_platform_integration(executable, receipt=receipt)
+        receipt.stage("ownership_validation")
         for entry in self.layout.managed:
             if self.platform.identity(entry.path) != before[str(entry.path)]:
                 raise RuntimeError(f"Managed path identity changed during refresh: {entry.path}")
+        receipt.stage("manifest_commit")
         manifest["official_baseline"] = source_fingerprint
         manifest["app_executable"] = str(executable)
         self.save(manifest)
+        receipt.stage("final_validation")
         self.load()
         print(f"Refreshed Profile {self.index} selector/runtime without replacing profile state")
 
@@ -352,6 +389,21 @@ class Profile:
         Managed profile state is persistent, while selectors and per-profile runtimes are derived
         artifacts that may be refreshed only when that managed profile is stopped.
         """
+        receipt = UpdateLifecycleReceipt(self.platform, self.layout, "prepare_launch")
+        try:
+            receipt.stage("update_lock")
+            with self.platform.update_guard(self.layout):
+                prepared = self._prepare_launch_under_guard(receipt)
+            receipt.complete()
+            return prepared
+        except Exception as error:
+            receipt.failure(error)
+            raise
+
+    def _prepare_launch_under_guard(self, receipt: UpdateLifecycleReceipt) -> Path:
+        if receipt.before["runtime"] in {"missing", "incomplete"}:
+            receipt.note_reconciliation()
+        receipt.stage("manifest_validation")
         manifest = self.load()
         if not manifest["ready"]:
             raise RuntimeError("Installation incomplete")
@@ -359,31 +411,50 @@ class Profile:
             if not entry.path.exists() or not self.platform.check_kind(entry):
                 raise RuntimeError(f"Managed path missing; refusing implicit recreation: {entry.path}")
 
+        receipt.stage("official_source_validation")
         executable = self.platform.resolve_executable(manifest["app_executable"])
         source_fingerprint = self.platform.fingerprint(executable)
-        if source_fingerprint != manifest["official_baseline"]:
-            if self.running():
+        changed = source_fingerprint != manifest["official_baseline"]
+        receipt.flag("officialSourceChanged", changed)
+        health = self.platform.selector_health(self.layout)
+        if health == "unsafe":
+            raise RuntimeError("Managed profile selector is unsafe; refusing automatic repair")
+        if self.platform.managed_runtime_health(self.layout) == "unsafe":
+            raise RuntimeError("Managed profile runtime is unsafe; refusing automatic repair")
+        selector_broken = health == "incomplete"
+        receipt.flag("selectorRepairNeeded", selector_broken)
+        if changed or selector_broken:
+            receipt.stage("managed_process_check")
+            running = bool(self.running())
+            receipt.flag("managedProfileRunning", running)
+            if running:
                 raise RuntimeError(
-                    f"Quit {self.display_name} before following the updated official ChatGPT application"
+                    f"Quit {self.display_name} before refreshing its desktop runtime and selector"
                 )
-            self.refresh()
+            receipt.note_reconciliation()
+            # Preserve the manifest-owned outer selector directory and all
+            # login/conversation state. Only derived code is regenerated.
+            self._refresh_under_guard(receipt)
             manifest = self.load()
 
-        # Even when the official application has not changed, a managed macOS clone may have
-        # been changed by an upstream self-updater. Reconcile that disposable runtime back to the
-        # recorded official baseline before launch. Generic platforms make this a no-op.
-        self.platform.prepare_profile_runtime(
+        receipt.stage("runtime_prepare")
+        # A managed clone can change via its own updater even if the
+        # official app has not changed. It remains a disposable artifact.
+        runtime_rebuilt = self.platform.prepare_profile_runtime(
             self.layout,
             executable,
             source_fingerprint=manifest["official_baseline"],
             profile_running=bool(self.running()),
         )
+        if runtime_rebuilt:
+            receipt.flag("managedRuntimeRebuilt", True)
+            receipt.note_reconciliation()
+        receipt.stage("final_validation")
         return self.platform.profile_executable(
             self.layout,
             executable,
             source_fingerprint=manifest["official_baseline"],
         )
-
     def launch(
         self,
         *,
@@ -431,6 +502,16 @@ class Profile:
         print(f"Profile {self.index} native diagnostics supported: {'yes' if supported else 'no'}")
         print(f"Profile {self.index} tool-lifecycle diagnostics: {'enabled' if enabled else 'disabled'}")
         print("Mode: narrow event logging only; no polling, screenshots, profile DB reads, or background sampler.")
+        print("Selector integrity:", self.platform.selector_health(self.layout))
+        print("Managed runtime integrity:", self.platform.managed_runtime_health(self.layout))
+        update = latest_update_receipt(self.meta, self.index)
+        if update is None:
+            print("Latest update incident: none or unavailable")
+        else:
+            print(
+                "Latest update incident:",
+                update["outcome"], update["operation"], "at", update["phase"],
+            )
 
     @property
     def diagnostic_artifacts(self) -> Path:
@@ -463,7 +544,13 @@ class Profile:
             "platform": self.platform.platform_id,
             "ownership": "official-desktop-profile",
             "backendPolicy": "single-authoritative-profile-runtime",
+            "selectorIntegrity": self.platform.selector_health(self.layout),
+            "managedRuntimeIntegrity": self.platform.managed_runtime_health(self.layout),
         }
+        if self.platform.platform_id == "macos":
+            base["chatgptUpdateAuthority"] = "official-default-app-only"
+            base["managedUpdateTiming"] = "next-cold-launch-after-normal-quit"
+            base["manualUpdaterMenu"] = "may-remain-visible-not-supported"
         if not self.manifest.exists():
             return {**base, "state": "not-installed", "manifestSchema": None}
         manifest = self._read_manifest()
@@ -490,6 +577,13 @@ class Profile:
         print("Platform:", self.platform.platform_id)
         print("Managed profile index:", self.index)
         print("State:", data["state"])
+        print("Selector integrity:", data.get("selectorIntegrity", "unknown"))
+        print("Managed runtime integrity:", data.get("managedRuntimeIntegrity", "unknown"))
+        if self.platform.platform_id == "macos":
+            print("ChatGPT update authority: official Profile 1 only")
+            print("Managed profile updater menu: may be visible; do not use it")
+        if data.get("selectorIntegrity") == "incomplete" and data.get("state") == "stopped":
+            print(f"Recovery: plura-desktop refresh --profile {self.index} (preserves profile state)")
         print("Manifest schema:", data.get("manifestSchema"))
         for entry in self.layout.managed:
             print(f"{entry.role}: {entry.path} ({'present' if entry.path.exists() else 'absent'})")
@@ -881,13 +975,28 @@ def launch_target(
         ))
     if renderer_cdp:
         extra.append("--renderer-cdp")
-    _start_detached(_private_command(platform, "_supervise-target", target_id, *extra))
-    return _wait_for_session(
-        platform,
-        target_id,
-        expected_responses_route_fingerprint=(responses_route.fingerprint if responses_route else None),
-        expect_renderer_cdp=renderer_cdp,
-    )
+    receipt = None
+    if target.get("managed") is True:
+        receipt = UpdateLifecycleReceipt(
+            platform, platform.layout(target["profileIndex"]), "launch_runtime",
+        )
+    try:
+        if receipt is not None:
+            receipt.stage("runtime_spawn")
+        _start_detached(_private_command(platform, "_supervise-target", target_id, *extra))
+        if receipt is not None:
+            receipt.stage("runtime_session_wait")
+        session = _wait_for_session(
+            platform,
+            target_id,
+            expected_responses_route_fingerprint=(responses_route.fingerprint if responses_route else None),
+            expect_renderer_cdp=renderer_cdp,
+        )
+        return session
+    except Exception as error:
+        if receipt is not None:
+            receipt.failure(error)
+        raise
 
 
 def _launch_target_attached(

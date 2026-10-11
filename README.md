@@ -125,6 +125,8 @@ The official/default ChatGPT installation is the **only application-update autho
 
 Plura does not patch ChatGPT's update UI. On current macOS builds that expose Sparkle, managed launches use process-local Sparkle defaults to suppress scheduled automatic update checks/downloads without changing the official app or default-profile preferences. Manual upstream update UI can still exist. If an upstream self-updater nevertheless changes a managed clone, Plura treats that clone as disposable and reconciles it back to the official app before the next managed launch.
 
+**Update the official ChatGPT application from Profile 1 only.** Do not use a manual updater control that might remain visible in managed profiles. Plura checks whether a managed launcher is complete, serializes update/launch preparation, repairs only safe disposable derived code, and records privacy-limited failure diagnostics. See [macOS update recovery and diagnostics](docs/UPDATE_RECOVERY_AND_DIAGNOSTICS.ko.md).
+
 ### Update
 
 This section updates **Plura Desktop itself**, not the ChatGPT application above.
