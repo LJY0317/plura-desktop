@@ -6,6 +6,8 @@
 
 The project now has a shared profile/domain lifecycle with platform adapters for **macOS, Windows, and Linux**. The official/default ChatGPT profile remains outside this project's ownership. Managed profiles start at Profile 2 and isolate `CODEX_HOME` plus the desktop user-data directory.
 
+For the distinction between **independent local profiles**, sequential account switching, mobile Remote continuity and the still-unavailable **simultaneous cross-account sharing of one original thread**, see [profile continuity and sharing boundaries](docs/PROFILE_CONTINUITY_AND_THREAD_SHARING.ko.md). A read-only macOS metadata-only storage separation audit is included at `scripts/diagnose_local_conversation_isolation.py`.
+
 `Plura Desktop` is the product name. ChatGPT and Codex describe the upstream products it integrates with rather than this project's brand identity.
 
 > [!IMPORTANT]

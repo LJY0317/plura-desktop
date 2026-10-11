@@ -6,6 +6,8 @@
 
 현재 공통 profile/domain lifecycle과 **macOS·Windows·Linux** 플랫폼 adapter로 구성됩니다. 공식/default ChatGPT 프로필은 이 프로젝트가 소유하지 않으며, managed profile은 Profile 2부터 시작합니다. 각 managed profile은 `CODEX_HOME`과 데스크톱 user-data를 분리합니다.
 
+서로 다른 계정으로 순차 로그인 전환해 **같은 로컬 대화를 이어가는 경우**와, 프로필 1/A·프로필 2/B가 동시에 **같은 원본 대화를 공유하는 아직 미구현 기능**은 구분해야 합니다. 실제 사용 관찰, Work/Codex UI 유사성의 검증 한계, 모바일 Remote 및 안전한 공유 설계는 [프로필 연속성·공유 기준 기록](PROFILE_CONTINUITY_AND_THREAD_SHARING.ko.md)에 정리했습니다. 읽기 전용 로컬 저장소 분리 진단은 `scripts/diagnose_local_conversation_isolation.py`를 실행하면 됩니다.
+
 > [!IMPORTANT]
 > OpenAI가 제작·보증·지원하는 제품이 아닌 비공식 커뮤니티 프로젝트입니다. ChatGPT와 Codex는 OpenAI의 상표입니다.
 
