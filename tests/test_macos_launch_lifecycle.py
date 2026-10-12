@@ -33,7 +33,13 @@ class MacOSLaunchLifecycleTests(unittest.TestCase):
                         expected_home = layout.codex_home
                     path, argv, env = execute.call_args.args
                     self.assertEqual(path, "/usr/bin/open")
-                    self.assertEqual(argv[1:6], ["-W", "-n", "-a", str(executable.parents[2]), "--args"])
+                    self.assertEqual(argv[1:3], ["-W", "-n"])
+                    self.assertEqual(argv[argv.index("-a"):argv.index("--args") + 1],
+                                     ["-a", str(executable.parents[2]), "--args"])
+                    forwarded = dict(argv[i + 1].split("=", 1) for i, arg in enumerate(argv) if arg == "--env")
+                    self.assertEqual(forwarded, {key: env[key] for key in
+                        ("CODEX_HOME", "CODEX_ELECTRON_USER_DATA_PATH", "CODEX_APP_SERVER_WS_URL")})
+                    self.assertNotIn("HOME", forwarded)
                     self.assertEqual(env["CODEX_HOME"], str(expected_home))
                     self.assertEqual(env["CODEX_APP_SERVER_WS_URL"], "ws://127.0.0.1:12345")
                     self.assertIn("--user-data-dir=" + env["CODEX_ELECTRON_USER_DATA_PATH"], argv)
@@ -49,7 +55,12 @@ class MacOSLaunchLifecycleTests(unittest.TestCase):
                     app_server_url="ws://127.0.0.1:12345", rust_log="info")
             execute.assert_not_called()
             change.assert_not_called()
-            self.assertEqual(spec.command[:5], ("/usr/bin/open", "-W", "-n", "-a", str(executable.parents[2])))
+            self.assertEqual(spec.command[:3], ("/usr/bin/open", "-W", "-n"))
+            forwarded = dict(spec.command[i + 1].split("=", 1)
+                             for i, arg in enumerate(spec.command) if arg == "--env")
+            self.assertEqual(forwarded, {key: spec.environment[key] for key in
+                ("CODEX_HOME", "CODEX_ELECTRON_USER_DATA_PATH", "CODEX_APP_SERVER_WS_URL", "RUST_LOG")})
+            self.assertNotIn("PATH", forwarded)
             self.assertEqual(spec.cwd, home)
             self.assertEqual(spec.environment["CODEX_HOME"], str(platform.layout(2).codex_home))
             self.assertEqual(spec.environment["RUST_LOG"], "info")

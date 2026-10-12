@@ -740,7 +740,14 @@ class MacOSPlatform(DesktopPlatform):
             env["RUST_LOG"] = rust_log
         if app_server_url:
             env["CODEX_APP_SERVER_WS_URL"] = app_server_url
-        command = ["/usr/bin/open", "-W", "-n", "-a", str(self._bundle_for_executable(executable)),
+        # LaunchServices does not inherit the environment of its open client.
+        # Forward only the profile/transport settings from the canonical spec;
+        # inherited credentials and other environment values stay off argv.
+        forwarded_keys = ("CODEX_HOME", "CODEX_ELECTRON_USER_DATA_PATH", "CODEX_APP_SERVER_WS_URL", "RUST_LOG")
+        application_environment = [argument for key in forwarded_keys if key in env
+                                   for argument in ("--env", f"{key}={env[key]}")]
+        command = ["/usr/bin/open", "-W", "-n", *application_environment,
+                   "-a", str(self._bundle_for_executable(executable)),
                    "--args", *args, *self.renderer_cdp_args(renderer_cdp_port)]
         return DesktopLaunch(tuple(command), env, self.home)
 
