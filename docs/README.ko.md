@@ -183,8 +183,6 @@ brew uninstall plura-desktop
 
 ### 문제 해결
 
-- **standalone release runtime이 없거나 checksum이 맞지 않음** — release asset 구성이 불완전하거나 손상된 상태입니다. 검사를 우회하지 말고 정상 release 또는 wheel/CLI fallback을 사용합니다.
-- **`-unsigned.dmg` 또는 `-signed.dmg`만 있거나 아직 GitHub Release가 없음** — 위 source/package 경로를 사용하거나 suffix 없는 notarized DMG를 기다립니다. 일반 설치 경로에서 macOS 보안 경고를 우회하지 않습니다.
 - **`plura-desktop: command not found`** — Plura Desktop을 설치한 격리 환경/package tool에서 실행하거나 해당 tool의 일반적인 PATH 설정을 확인합니다. 활성화된 venv라면 `python -m plura_desktop --version`도 같은 fallback입니다. console script만 따로 복사하지 않습니다.
 - **Windows/Linux에서 `ChatGPT executable not found`** — 실제 실행 파일을 `--app PATH`로 넘기거나 `CHATGPT_EXECUTABLE`을 설정합니다. 알 수 없는 설치 layout을 추측하지 않습니다.
 - **`restart-required`** — 요청한 canonical capability/session 밖에서 이미 실행 중입니다. 해당 ChatGPT 창을 한 번 정상 종료한 뒤 Plura Desktop으로 다시 실행합니다.
@@ -203,7 +201,6 @@ watcher, idle polling daemon, login item, updater, background sampler는 없습�
 
 - **Mainstream-first:** 공식 ChatGPT Desktop + 일반 managed profile 흐름을 기본 경로로 두고 특수 launcher/진단/downstream client는 optional adapter/contract로 격리합니다.
 - **Change-resilient:** OpenAI 소유의 모델/tool 이름, UI/DOM, 실행 파일 위치, incidental schema를 제품 전체의 고정 가정으로 두지 않습니다. runtime discovery, capability detection, versioned contract와 platform adapter를 우선합니다.
-- **Fail closed:** ownership/path/process/외부 구조가 모호하면 추측해서 변경하지 않고 중단하거나 읽기 전용 진단으로 제한합니다.
 - **Easy in, easy out:** 설치·refresh·제거는 대칭적인 ownership lifecycle입니다. 제품이 만든 상태는 `PluraDesktop` namespace에 귀속되며 공식 ChatGPT 앱이나 소유권이 불명확한 데이터는 삭제하지 않습니다.
 - **Consistent naming:** 제품명은 **Plura Desktop**이고 ChatGPT/Codex는 integration 설명입니다. 제품/CLI/source/metadata namespace는 canonical Plura 이름만 사용합니다.
 - **Multi-OS / efficient diagnostics:** macOS·Windows·Linux를 공통 architecture 대상으로 두고 OS 차이는 adapter에 격리합니다. polling/background sampler를 피하고 CPU·배터리·I/O·로그 비용을 제한하며, 진단은 구조화·bounded·privacy-safe하게 필요할 때만 수집합니다.
@@ -316,11 +313,9 @@ plura-desktop uninstall --profile 2
 plura-desktop uninstall --profile 2 --yes
 ```
 
-실제 삭제 전 manifest와 현재 path identity를 다시 검증합니다. 실행 중 profile은 자동 종료하지 않고, 바뀐 path·symlink/junction·보호된 default 경로·mount subtree는 삭제를 거부합니다. 해당 Profile의 fixed product-generated runtime/diagnostic artifact도 안전성 검증 후 함께 제거합니다.
 
 ## 격리 범위
 
-managed `CODEX_HOME`과 Desktop user-data를 분리하지만 OS sandbox는 아닙니다. 시스템 credential store, 권한, URL handler, cache/helper process, 계정 서버 상태의 완전한 격리는 보장하지 않습니다.
 
 공식 ChatGPT 앱/실행 파일은 항상 read-only 입력입니다. macOS에서만 managed profile을 위해 바이트 동일성·기존 코드서명을 검증한 APFS copy-on-write runtime clone을 만들며, 원본 앱 자체는 수정·재서명·교체하지 않습니다.
 
