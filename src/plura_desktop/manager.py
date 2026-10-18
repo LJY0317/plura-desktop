@@ -23,7 +23,6 @@ from .domain import (
 )
 from .diagnostic_artifacts import (read_diagnostic_artifacts, validate_profile_diagnostic_tree, write_diagnostic_artifact, write_runtime_diagnostic_artifact, validate_runtime_diagnostic_tree)
 from .lifecycle_diagnostics import UpdateLifecycleReceipt, latest_update_receipt
-from .permission_diagnostics import PermissionDiagnostics, permission_resume_summary
 from .io import atomic_write_json
 from .app_server_proxy import RoutePreservingAppServerProxy
 from .platforms import DesktopPlatform, current_platform
@@ -525,12 +524,6 @@ class Profile:
                 "Latest update incident:",
                 update["outcome"], update["operation"], "at", update["phase"],
             )
-        try:
-            lines = permission_resume_summary(read_diagnostic_artifacts(self.meta, self.index))
-        except (OSError, RuntimeError, ValueError):
-            lines = ["Permission resume evidence: unavailable; diagnostic artifacts could not be safely read."]
-        for line in lines:
-            print(line)
 
     @property
     def diagnostic_artifacts(self) -> Path:
@@ -1214,7 +1207,6 @@ def _supervise_target(
                 return
             _terminate_owned(desktop)
         profile: Profile | None = None
-        permission_diagnostics_enabled = False
         if target.get("managed") is True:
             profile_index = target.get("profileIndex")
             if not isinstance(profile_index, int):
@@ -1224,17 +1216,10 @@ def _supervise_target(
                 platform, profile.layout, "launch_supervisor",
             )
             supervisor_receipt.stage("supervisor_managed_prepare")
-            permission_diagnostics_enabled = profile.tool_lifecycle_diagnostics_enabled(profile.load())
             desktop_executable = profile.prepare_launch()
         else:
             desktop_executable = platform.resolve_executable()
         diagnostic_write_lock = threading.Lock()
-
-        def write_permission_summary(summary: dict) -> None:
-            if profile is None:
-                raise RuntimeError("Permission diagnostics require a managed profile")
-            with diagnostic_write_lock:
-                write_diagnostic_artifact(profile.meta, profile.index, summary)
 
         def write_transport_summary(summary: dict) -> None:
             with diagnostic_write_lock:
@@ -1244,7 +1229,7 @@ def _supervise_target(
             raise RuntimeError("Canonical runtime preparation exceeded startup deadline")
         backend_endpoint = _allocate_loopback_endpoint()
         endpoint = backend_endpoint
-        if responses_route is not None or permission_diagnostics_enabled:
+        if responses_route is not None:
             endpoint = _allocate_loopback_endpoint()
             while endpoint == backend_endpoint:
                 endpoint = _allocate_loopback_endpoint()
@@ -1303,7 +1288,7 @@ def _supervise_target(
         else:
             raise RuntimeError("Canonical app-server readiness timeout")
 
-        if responses_route is not None or permission_diagnostics_enabled:
+        if responses_route is not None:
             if supervisor_receipt is not None:
                 supervisor_receipt.stage("supervisor_proxy_ready")
             route_proxy = RoutePreservingAppServerProxy(
@@ -1312,9 +1297,6 @@ def _supervise_target(
                 responses_route,
                 transport_failure=write_transport_summary,
                 **({"model_list_overlay": model_list_overlay} if model_list_overlay else {}),
-                **({"permission_diagnostics": lambda: PermissionDiagnostics(
-                    write_permission_summary
-                )} if permission_diagnostics_enabled else {}),
             )
             route_proxy.start()
             deadline = min(startup_deadline, time.monotonic() + 5.0)
@@ -1341,10 +1323,6 @@ def _supervise_target(
             checked_executable = _target_executable(platform, target)
             if checked_executable != desktop_executable:
                 raise RuntimeError("Prepared Desktop executable changed during startup")
-            if permission_diagnostics_enabled:
-                rust_log = platform.tool_lifecycle_diagnostic_rust_log()
-                if rust_log is None:
-                    raise RuntimeError("Tool lifecycle diagnostics are unsupported")
         else:
             desktop_executable = platform.resolve_executable()
         desktop_launch = platform.desktop_launch_spec(
