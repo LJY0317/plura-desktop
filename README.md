@@ -196,8 +196,6 @@ brew uninstall plura-desktop
 
 ### Troubleshooting
 
-- **A standalone release runtime is missing or fails checksum verification** — the release asset set is incomplete or damaged. Do not bypass the check; use an intact release or the wheel/CLI fallback.
-- **Only `-unsigned.dmg` or `-signed.dmg` exists, or there is no GitHub Release yet** — use the source/package path above or wait for a notarized un-suffixed DMG. Do not bypass macOS security prompts as the normal install path.
 - **`plura-desktop: command not found`** — run it from the isolated environment/package tool where you installed Plura Desktop, or fix that tool's normal PATH setup. In an activated venv, `python -m plura_desktop --version` is an equivalent fallback. Do not copy the console script by itself.
 - **`ChatGPT executable not found` on Windows/Linux** — pass the real executable with `--app PATH` or set `CHATGPT_EXECUTABLE`. Plura Desktop does not guess unknown install layouts.
 - **`restart-required`** — the target is already running outside the requested canonical capability/session. Quit that ChatGPT window normally once, then launch it again through Plura Desktop.

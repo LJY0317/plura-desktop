@@ -99,5 +99,3 @@ cat RELEASE-METADATA.json
 ```
 
 For current immutable releases, `sourceTag`, `sourceCommit`, and `workflowCommit` should identify the tag/commit that was actually checked out and released. `workflowRunID` identifies the GitHub Actions run that built the asset set.
-
-If any checksum, release verification, asset verification, or attestation check fails, do not install that copy. Re-download the asset from the official GitHub Release rather than bypassing verification.

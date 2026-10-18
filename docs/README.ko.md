@@ -188,8 +188,6 @@ brew uninstall plura-desktop
 - **`plura-desktop: command not found`** — Plura Desktop을 설치한 격리 환경/package tool에서 실행하거나 해당 tool의 일반적인 PATH 설정을 확인합니다. 활성화된 venv라면 `python -m plura_desktop --version`도 같은 fallback입니다. console script만 따로 복사하지 않습니다.
 - **Windows/Linux에서 `ChatGPT executable not found`** — 실제 실행 파일을 `--app PATH`로 넘기거나 `CHATGPT_EXECUTABLE`을 설정합니다. 알 수 없는 설치 layout을 추측하지 않습니다.
 - **`restart-required`** — 요청한 canonical capability/session 밖에서 이미 실행 중입니다. 해당 ChatGPT 창을 한 번 정상 종료한 뒤 Plura Desktop으로 다시 실행합니다.
-- **uninstall이 running profile 때문에 거부됨** — managed ChatGPT profile을 정상 종료한 뒤 dry-run부터 다시 실행합니다. uninstaller는 프로세스를 강제 종료하지 않습니다.
-- **path/identity/symlink 안전 오류** — Plura Desktop으로 임의 삭제하지 말고 보고된 경로를 먼저 확인합니다. destructive ownership이 모호하면 의도적으로 fail-closed합니다.
 
 ## 소유권 규칙
 
