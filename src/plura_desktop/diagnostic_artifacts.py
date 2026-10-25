@@ -2,20 +2,21 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-from itertools import islice
 import os
 from pathlib import Path
 import re
 import secrets
 import shutil
 import stat
+import time
 
 from .domain import MANIFEST_SCHEMA, profile_identifier, validate_profile_index
 
 
 DIAGNOSTIC_ARTIFACT_SCHEMA = 1
 DIAGNOSTIC_ARTIFACT_MAX_BYTES = 256 * 1024
-DIAGNOSTIC_ARTIFACT_MAX_INCIDENTS = 10
+DIAGNOSTIC_TOTAL_MAX_BYTES = 32 * 1024 * 1024
+DIAGNOSTIC_RETENTION_DAYS = 30
 INCIDENT_ID_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{8}$")
 
 
@@ -122,10 +123,11 @@ def write_diagnostic_artifact(
     *,
     incident_id: str | None = None,
     max_bytes: int = DIAGNOSTIC_ARTIFACT_MAX_BYTES,
-    max_incidents: int = DIAGNOSTIC_ARTIFACT_MAX_INCIDENTS,
+    max_total_bytes: int = DIAGNOSTIC_TOTAL_MAX_BYTES,
+    retention_days: int = DIAGNOSTIC_RETENTION_DAYS,
 ) -> dict:
     validate_profile_index(profile)
-    if max_bytes < 1024 or max_incidents < 1:
+    if max_bytes < 1024 or max_total_bytes < 1024 or retention_days < 1:
         raise RuntimeError("Diagnostic artifact policy is invalid")
     incident = incident_id or new_incident_id()
     if not INCIDENT_ID_RE.fullmatch(incident):
@@ -137,11 +139,12 @@ def write_diagnostic_artifact(
         "incident": incident,
         "profile": profile,
         "maxBytes": max_bytes,
-        "retentionMaxIncidents": max_incidents,
+        "retentionMaxBytes": max_total_bytes,
+        "retentionDays": retention_days,
     }
     payload = {**output, "artifact": artifact}
     data = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    if len(data) > max_bytes:
+    if len(data) > min(max_bytes, max_total_bytes):
         raise RuntimeError(
             f"Diagnostic summary exceeds bounded artifact size ({len(data)} > {max_bytes} bytes)"
         )
@@ -152,7 +155,7 @@ def write_diagnostic_artifact(
     for directory in (diagnostics, profile_root, incidents):
         _ensure_private_directory(directory)
     validate_profile_diagnostic_tree(metadata, profile)
-    return _write_bounded_incident(incidents, incident, data, artifact, max_incidents)
+    return _write_bounded_incident(metadata, incidents, incident, data, artifact, max_total_bytes, retention_days)
 
 
 def read_diagnostic_artifacts(metadata: Path, profile: int) -> list[dict]:
@@ -161,11 +164,10 @@ def read_diagnostic_artifacts(metadata: Path, profile: int) -> list[dict]:
     if not root.exists():
         return []
     _validate_installed_profile(metadata, profile)
-    candidates = list(islice(root.iterdir(), DIAGNOSTIC_ARTIFACT_MAX_INCIDENTS + 1))
-    if len(candidates) > DIAGNOSTIC_ARTIFACT_MAX_INCIDENTS:
-        raise RuntimeError("Diagnostic retention limit exceeded")
+    candidates = list(root.iterdir())
     validate_profile_diagnostic_tree(metadata, profile)
     summaries = []
+    read_bytes = 0
     for candidate in sorted(candidates, key=lambda item: (item / "summary.json").stat().st_mtime_ns):
         path = candidate / "summary.json"
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -174,7 +176,8 @@ def read_diagnostic_artifacts(metadata: Path, profile: int) -> list[dict]:
             if not stat.S_ISREG(identity.st_mode) or (hasattr(os, "getuid") and identity.st_uid != os.getuid()):
                 raise RuntimeError("Diagnostic summary ownership is invalid")
             data = stream.read(DIAGNOSTIC_ARTIFACT_MAX_BYTES + 1)
-        if len(data) > DIAGNOSTIC_ARTIFACT_MAX_BYTES:
+        read_bytes += len(data)
+        if read_bytes > DIAGNOSTIC_TOTAL_MAX_BYTES or len(data) > DIAGNOSTIC_ARTIFACT_MAX_BYTES:
             raise RuntimeError("Diagnostic size limit exceeded")
         try:
             value = json.loads(data)
@@ -185,24 +188,47 @@ def read_diagnostic_artifacts(metadata: Path, profile: int) -> list[dict]:
     return summaries
 
 
-def _write_bounded_incident(incidents: Path, incident: str, data: bytes, artifact: dict, max_incidents: int) -> dict:
+def _diagnostic_summary_paths(metadata: Path) -> list[Path]:
+    root = metadata / "diagnostics"
+    _require_owned_directory(root, "Diagnostic root")
+    summaries = []
+    for namespace in root.iterdir():
+        if namespace.name == "runtime":
+            runtime = validate_runtime_diagnostic_tree(metadata)
+            if runtime is not None:
+                summaries.extend(runtime.glob("*/incidents/*/summary.json"))
+        elif re.fullmatch(r"profile-[0-9]+", namespace.name):
+            profile = int(namespace.name.split("-")[1])
+            validate_profile_diagnostic_tree(metadata, profile)
+            summaries.extend(namespace.glob("incidents/*/summary.json"))
+        else:
+            raise RuntimeError("Unexpected diagnostic namespace")
+    return summaries
+
+
+def _write_bounded_incident(metadata: Path, incidents: Path, incident: str, data: bytes, artifact: dict, max_total_bytes: int, retention_days: int) -> dict:
     for candidate in incidents.iterdir():
         if not INCIDENT_ID_RE.fullmatch(candidate.name):
             raise RuntimeError("Unexpected diagnostic artifact")
         _safe_incident_directory(candidate)
-    retained = sorted(incidents.iterdir(), key=lambda item: item.name)
+    _diagnostic_summary_paths(metadata)
 
     incident_root = incidents / incident
     if incident_root.exists():
         raise RuntimeError(f"Diagnostic incident already exists: {incident}")
     incident_root.mkdir(mode=0o700)
     _atomic_private_write(incident_root / "summary.json", data)
-    retained.append(incident_root)
-    # Random incident suffixes do not order writes within the same second.
-    retained.sort(key=lambda item: ((item / "summary.json").stat().st_mtime_ns, item.name))
-    while len(retained) > max_incidents:
-        oldest = retained.pop(0)
-        shutil.rmtree(oldest)
+    retained = _diagnostic_summary_paths(metadata)
+    total_bytes = sum(path.stat().st_size for path in retained)
+    cutoff = time.time() - retention_days * 86400
+    # Newest write wins even when two IDs share a timestamp with random suffixes.
+    for summary in sorted(retained, key=lambda p: (p.stat().st_mtime_ns, p.parent.name)):
+        if summary.parent == incident_root:
+            continue
+        if summary.stat().st_mtime < cutoff or total_bytes > max_total_bytes:
+            size = summary.stat().st_size
+            shutil.rmtree(summary.parent)
+            total_bytes -= size
 
     return {**artifact, "sizeBytes": len(data)}
 
@@ -222,7 +248,8 @@ def write_runtime_diagnostic_artifact(metadata: Path, target_id: str, supervisor
         raise RuntimeError("Runtime diagnostic owner changed")
     incident = new_incident_id()
     artifact = {"schema": 1, "incident": incident, "targetHash": route_key(target_id),
-                "maxBytes": DIAGNOSTIC_ARTIFACT_MAX_BYTES, "retentionMaxIncidents": DIAGNOSTIC_ARTIFACT_MAX_INCIDENTS}
+                "maxBytes": DIAGNOSTIC_ARTIFACT_MAX_BYTES, "retentionMaxBytes": DIAGNOSTIC_TOTAL_MAX_BYTES,
+                "retentionDays": DIAGNOSTIC_RETENTION_DAYS}
     data = (json.dumps({**output, "artifact": artifact}, sort_keys=True, indent=2) + "\n").encode()
     if len(data) > DIAGNOSTIC_ARTIFACT_MAX_BYTES:
         raise RuntimeError("Runtime diagnostic exceeds bound")
@@ -234,7 +261,7 @@ def write_runtime_diagnostic_artifact(metadata: Path, target_id: str, supervisor
         _ensure_private_directory(directory)
     if any(path.name != "incidents" for path in target.iterdir()):
         raise RuntimeError("Runtime diagnostic namespace changed")
-    return _write_bounded_incident(incidents, incident, data, artifact, DIAGNOSTIC_ARTIFACT_MAX_INCIDENTS)
+    return _write_bounded_incident(metadata, incidents, incident, data, artifact, DIAGNOSTIC_TOTAL_MAX_BYTES, DIAGNOSTIC_RETENTION_DAYS)
 
 
 def validate_runtime_diagnostic_tree(metadata: Path) -> Path | None:

@@ -215,7 +215,7 @@ watcher, idle polling daemon, login item, updater, background sampler는 없습�
 
 Linux는 XDG 환경 변수가 없으면 `~/.local/share`, `~/.config`, `~/.local/state`를 사용합니다.
 
-`PluraDesktop` metadata 내부의 역할도 고정합니다. `profile-N-install-manifest.json`은 ownership/provenance state, `control-runtime`은 refresh 가능한 설치 코드, `runtime-sessions`는 live runtime용 임시 claim/descriptor, macOS `runtime-apps/profile-N` 및 Windows/Linux `profile-N-runtime`은 재생성 가능한 derived runtime입니다. 선택적으로 저장하는 진단 증거는 `diagnostics/profile-N/incidents` 아래에만 두며 Profile당 최대 10개, incident당 최대 256 KiB로 제한합니다. macOS 간편 installer를 사용한 경우 `distribution/cli-runtime`과 `bin`은 installer-owned standalone CLI runtime/launcher이며 full uninstall 도구가 managed profile 제거 후 함께 정리합니다. 별도 background cache/telemetry/rolling product log는 만들지 않습니다.
+`PluraDesktop` metadata 내부의 역할도 고정합니다. `profile-N-install-manifest.json`은 ownership/provenance state, `control-runtime`은 refresh 가능한 설치 코드, `runtime-sessions`는 live runtime용 임시 claim/descriptor, macOS `runtime-apps/profile-N` 및 Windows/Linux `profile-N-runtime`은 재생성 가능한 derived runtime입니다. 선택적으로 저장하는 진단 증거는 `diagnostics/profile-N/incidents` 아래에만 두며 프로필·runtime 진단 전체 32MiB/30일, incident당 최대 256 KiB로 제한합니다. macOS 간편 installer를 사용한 경우 `distribution/cli-runtime`과 `bin`은 installer-owned standalone CLI runtime/launcher이며 full uninstall 도구가 managed profile 제거 후 함께 정리합니다. 별도 background cache/telemetry/rolling product log는 만들지 않습니다.
 
 Apple Silicon macOS에서는 현재 공식 ChatGPT 앱으로 로그인까지 포함한 실제 E2E를 검증했습니다. `/Applications/ChatGPT.app` 원본은 항상 read-only이며 애플리케이션 업데이트의 유일한 기준입니다. managed profile용 runtime clone은 launcher metadata 아래의 재생성 가능한 disposable derived code이고, 공식 앱 업데이트나 managed clone 변경이 감지되면 다음 cold launch 전에 공식 앱 기준으로 다시 맞춥니다. Intel macOS standalone은 native Intel GitHub runner에서 build/smoke까지 통과했지만 Intel 공식 앱 E2E는 아직 별도 gate입니다. Windows는 CI에서 fake executable로 공통 lifecycle, selector, 경로/환경 contract를 검증합니다. Linux는 이 공통 CI에 더해 OpenAI의 현재 공식 Ubuntu/Debian preview package를 Ubuntu 24.04 runner에 실제 설치하고, `chatgpt` wrapper → 실제 `ChatGPT` executable, bundled `resources/codex`, 좁은 GUI session 환경, isolated Profile 2 설치, generated selector를 통한 renderer-enabled canonical launch까지 검증합니다. **다만 실제 사용자 로그인 유지, default profile과의 독립 사용, product 정상 quit, refresh/uninstall 전체 실사용 흐름은 아직 별도 gate입니다.**
 
@@ -298,7 +298,7 @@ plura-desktop diagnostics-off --profile 2
 plura-desktop-diagnose --profile 2 --minutes 60 --json
 ```
 
-증거 파일이 실제로 필요할 때만 `--write-artifact`를 사용합니다. managed Profile 2..99에만 허용되며 sanitized summary를 `PluraDesktop/diagnostics/profile-N/incidents` 아래 저장합니다. incident당 최대 256 KiB, Profile당 최대 10개로 제한하고 오래된 incident를 bounded retention으로 정리합니다. symlink/replaced/unexpected incident 구조가 있으면 새 artifact를 쓰기 전에 fail-closed합니다. 이 artifact는 해당 Profile uninstall 때 함께 제거됩니다.
+증거 파일이 실제로 필요할 때만 `--write-artifact`를 사용합니다. managed Profile 2..99에만 허용되며 sanitized summary를 `PluraDesktop/diagnostics/profile-N/incidents` 아래 저장합니다. incident당 최대 256 KiB, 프로필·runtime 진단 전체 32MiB/30일로 제한하고 오래된 incident를 bounded retention으로 정리합니다. symlink/replaced/unexpected incident 구조가 있으면 새 artifact를 쓰기 전에 fail-closed합니다. 이 artifact는 해당 Profile uninstall 때 함께 제거됩니다.
 
 ```sh
 plura-desktop-diagnose --profile 2 --minutes 60 --json --write-artifact

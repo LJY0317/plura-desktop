@@ -157,7 +157,7 @@ class FakeProfileUpdateReceipts(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     self.profile.refresh()
         records = _incident_payloads(self.profile.meta)
-        self.assertEqual(10, len(records))
+        self.assertEqual(13, len(records))
         self.assertTrue(all(x["updateLifecycle"]["outcome"] == "failed" for x in records))
         self.assertNotIn("private", json.dumps(records))
 

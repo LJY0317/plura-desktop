@@ -95,9 +95,9 @@ class ProfileDiagnosticTests(unittest.TestCase):
                 result = module.write_diagnostic_artifact(
                     home,
                     2,
-                    {"profile": 2, "window": {"parsedLineCount": 0}},
+                    {"profile": 2, "window": {"parsedLineCount": 0}, "padding": "x" * 100},
                     incident_id=incident,
-                    max_incidents=2,
+                    max_total_bytes=1024,
                 )
                 self.assertEqual(result["incident"], incident)
                 self.assertLessEqual(result["sizeBytes"], module.DIAGNOSTIC_ARTIFACT_MAX_BYTES)
@@ -109,7 +109,7 @@ class ProfileDiagnosticTests(unittest.TestCase):
             self.assertTrue(summary.is_file())
             rendered = summary.read_text(encoding="utf-8")
             self.assertIn('"schema": 1', rendered)
-            self.assertIn('"retentionMaxIncidents": 2', rendered)
+            self.assertIn('"retentionMaxBytes": 1024', rendered)
 
     def test_retention_keeps_newest_write_with_reverse_same_second_ids(self):
         with tempfile.TemporaryDirectory(prefix="profile-diagnostic-order-", dir=ROOT) as root:
@@ -117,9 +117,41 @@ class ProfileDiagnosticTests(unittest.TestCase):
             self._install_artifact_fixture(home)
             ids = ["20260928T120000Z-ffffffff", "20260928T120000Z-00000000"]
             for incident in ids:
-                module.write_diagnostic_artifact(home, 2, {"kind": "permission-rpc"},
-                    incident_id=incident, max_incidents=1)
+                module.write_diagnostic_artifact(home, 2, {"kind": "permission-rpc", "padding": "x" * 400},
+                    incident_id=incident, max_total_bytes=1024)
             self.assertEqual([p.name for p in module.diagnostics_root(home, 2).iterdir()], ids[1:])
+
+    def test_retention_has_no_count_cap_and_expires_old_summaries(self):
+        import os, time
+        with tempfile.TemporaryDirectory() as root:
+            home = Path(root)
+            self._install_artifact_fixture(home)
+            for i in range(14):
+                module.write_diagnostic_artifact(home, 2, {"kind": "small"},
+                    incident_id=f"20261025T120000Z-{i:08x}")
+            incidents = module.diagnostics_root(home, 2)
+            self.assertEqual(14, len(list(incidents.iterdir())))
+            old = sorted(incidents.iterdir())[0] / "summary.json"
+            os.utime(old, (time.time()-31*86400, time.time()-31*86400))
+            module.write_diagnostic_artifact(home, 2, {"kind": "next"},
+                incident_id="20261025T120001Z-ffffffff")
+            self.assertFalse(old.exists())
+            self.assertEqual(14, len(list(incidents.iterdir())))
+
+    def test_byte_budget_is_shared_with_runtime_diagnostics(self):
+        import json
+        from plura_desktop.diagnostic_artifacts import write_runtime_diagnostic_artifact
+        from plura_desktop.runtime import descriptor_path
+        with tempfile.TemporaryDirectory() as root:
+            home = Path(root)
+            metadata = self._install_artifact_fixture(home)
+            descriptor = descriptor_path(metadata, "default")
+            descriptor.parent.mkdir(parents=True, exist_ok=True)
+            descriptor.write_text(json.dumps({"targetID":"default", "supervisorPID":123}))
+            write_runtime_diagnostic_artifact(metadata, "default", 123, {"padding":"x"*500})
+            module.write_diagnostic_artifact(home, 2, {"padding":"x"*500}, max_total_bytes=1024)
+            self.assertEqual([], list((metadata / "diagnostics/runtime").glob("*/incidents/*/summary.json")))
+            self.assertEqual(1, len(list(module.diagnostics_root(home,2).iterdir())))
 
     def test_diagnostic_artifact_size_cap_fails_before_creating_storage(self):
         with tempfile.TemporaryDirectory(prefix="profile-diagnostic-artifact-cap-", dir=ROOT) as root:

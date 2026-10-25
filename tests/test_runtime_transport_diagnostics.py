@@ -24,7 +24,7 @@ class RuntimeDiagnosticTests(unittest.TestCase):
             write_runtime_diagnostic_artifact(self.root, "default", 123, {"reason": "message_limit"})
         tree = validate_runtime_diagnostic_tree(self.root)
         files = list(tree.glob("*/incidents/*/summary.json"))
-        self.assertEqual(len(files), 10)
+        self.assertEqual(len(files), 12)
         self.assertEqual(json.loads(files[0].read_text())["artifact"]["targetHash"], route_key("default"))
         if os.name != "nt":
             self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)

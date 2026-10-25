@@ -24,7 +24,7 @@ from urllib.parse import quote
 
 from .diagnostic_artifacts import (
     DIAGNOSTIC_ARTIFACT_MAX_BYTES,
-    DIAGNOSTIC_ARTIFACT_MAX_INCIDENTS,
+    DIAGNOSTIC_TOTAL_MAX_BYTES, DIAGNOSTIC_RETENTION_DAYS,
     diagnostic_incidents_root,
     write_diagnostic_artifact as write_product_diagnostic_artifact,
 )
@@ -69,7 +69,8 @@ def write_diagnostic_artifact(
     *,
     incident_id: str | None = None,
     max_bytes: int = DIAGNOSTIC_ARTIFACT_MAX_BYTES,
-    max_incidents: int = DIAGNOSTIC_ARTIFACT_MAX_INCIDENTS,
+    max_total_bytes: int = DIAGNOSTIC_TOTAL_MAX_BYTES,
+    retention_days: int = DIAGNOSTIC_RETENTION_DAYS,
 ) -> dict:
     metadata = home / "Library/Application Support/PluraDesktop"
     return write_product_diagnostic_artifact(
@@ -78,7 +79,8 @@ def write_diagnostic_artifact(
         output,
         incident_id=incident_id,
         max_bytes=max_bytes,
-        max_incidents=max_incidents,
+        max_total_bytes=max_total_bytes,
+        retention_days=retention_days,
     )
 
 
@@ -798,7 +800,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Persist this sanitized summary under PluraDesktop diagnostics/profile/incident storage. "
-            "Artifacts are size-bounded and retain at most 10 incidents per profile."
+            "Artifacts share a 32 MiB / 30-day budget across profile and runtime diagnostics."
         ),
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON only")

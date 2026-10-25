@@ -248,7 +248,7 @@ Within the product-owned metadata root, persistent and derived data have explici
 | `runtime-sessions/` | canonical live-session claims/descriptors | runtime-only; stale entries are never treated as authority |
 | `runtime-apps/profile-N/` | macOS derived signed runtime clone | regenerated/removed with Profile N lifecycle |
 | `profile-N-runtime/` | Windows/Linux derived launcher runtime | manifest-owned and removed with Profile N |
-| `diagnostics/profile-N/incidents/` | optional sanitized diagnostic evidence | explicit opt-in, max 10 incidents, max 256 KiB each; removed with Profile N |
+| `diagnostics/profile-N/incidents/` | optional sanitized diagnostic evidence | explicit opt-in, 30 days / 32 MiB shared diagnostic budget, max 256 KiB each; removed with Profile N |
 | `distribution/cli-runtime/` + `bin/` | guided macOS install's standalone CLI runtime/stable launchers | installer-owned; removed by `Uninstall Plura Desktop.command` after managed profiles |
 
 There is currently no Plura Desktop background cache, telemetry store, or rolling product log. Managed `CODEX_HOME` and Desktop user-data remain integration/profile payloads outside this product-metadata layout and are not renamed merely for branding.
@@ -401,7 +401,7 @@ By default the deeper diagnostic writes nothing and prints only a sanitized summ
 plura-desktop-diagnose --profile 2 --minutes 60 --json
 ```
 
-When persistent evidence is explicitly useful, `--write-artifact` stores the same sanitized summary under the product-owned `diagnostics/profile-N/incidents/` namespace. Persistent artifacts are available only for managed profiles (`2..99`), are capped at **256 KiB per incident**, retain at most **10 incidents per profile**, and are removed with that profile's uninstall. Existing incident directories that are replaced, symlinked, or structurally unexpected cause the write/retention operation to fail closed.
+When persistent evidence is explicitly useful, `--write-artifact` stores the same sanitized summary under the product-owned `diagnostics/profile-N/incidents/` namespace. Persistent artifacts are available only for managed profiles (`2..99`), are capped at **256 KiB per incident**, share a **32 MiB / 30-day budget across profile and runtime diagnostics**, and are removed with that profile's uninstall. Existing incident directories that are replaced, symlinked, or structurally unexpected cause the write/retention operation to fail closed.
 
 ```sh
 plura-desktop-diagnose --profile 2 --minutes 60 --json --write-artifact
