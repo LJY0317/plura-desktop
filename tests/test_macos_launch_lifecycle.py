@@ -66,6 +66,26 @@ class MacOSLaunchLifecycleTests(unittest.TestCase):
             self.assertEqual(spec.environment["RUST_LOG"], "info")
             self.assertNotIn("environment", repr(spec))
 
+    def test_restored_clone_cannot_claim_another_profile_or_steal_supervisor_identity(self):
+        from plura_desktop.manager import _load_target_session
+        from plura_desktop.runtime import TargetSession
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            platform = MacOSPlatform(home=home)
+            executable = home / "runtime.app/Contents/MacOS/ChatGPT"
+            layout = platform.layout(2)
+            rows = f"686 1 {executable}\n7498 1 {executable} --user-data-dir={layout.user_data}\n"
+            with patch("plura_desktop.platforms.macos.subprocess.check_output", return_value=rows):
+                self.assertIsNone(platform.desktop_process_id(executable))
+                self.assertEqual(platform.desktop_process_id(executable, user_data=layout.user_data), 7498)
+                self.assertEqual(platform.supervised_desktop_pid(executable, Mock(poll=lambda: None),
+                    deadline=time.monotonic() + 1, user_data=layout.user_data), 7498)
+                wrong = TargetSession("managed", "ws://127.0.0.1:12345", 1, 2, 686)
+                correct = TargetSession("managed", "ws://127.0.0.1:12345", 1, 2, 7498)
+                for candidate, expected in [(wrong, None), (correct, correct)]:
+                    with patch("plura_desktop.manager.load_session", return_value=candidate):
+                        self.assertEqual(_load_target_session(platform, home, {"id": "managed", "profileIndex": 2}), expected)
+
     def test_launcher_pid_is_not_published_as_desktop_identity(self):
         platform = MacOSPlatform(home=Path(tempfile.gettempdir()))
         launcher = Mock(pid=11)

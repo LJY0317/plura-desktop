@@ -614,7 +614,7 @@ class MacOSPlatform(DesktopPlatform):
             if self._command_has_exact_argument(row, marker)
         ]
 
-    def desktop_process_id(self, executable: Path) -> int | None:
+    def desktop_process_id(self, executable: Path, *, user_data: Path | None = None) -> int | None:
         try:
             rows = subprocess.check_output(["ps", "-axo", "pid=,ppid=,args="], text=True)
         except subprocess.SubprocessError as error:
@@ -630,13 +630,11 @@ class MacOSPlatform(DesktopPlatform):
                 continue
             command = parts[2]
             if any(command == expected or command.startswith(expected + " ") for expected in expected_paths):
-                matches.append(int(parts[0]))
+                if user_data is None or self._command_has_exact_argument(row, "--user-data-dir=" + str(user_data)):
+                    matches.append(int(parts[0]))
         return matches[0] if len(matches) == 1 else None
 
     def request_desktop_quit(self, executable: Path, desktop_pid: int) -> None:
-        observed = self.desktop_process_id(executable)
-        if observed != desktop_pid:
-            raise RuntimeError("ChatGPT desktop process identity changed before normal quit")
         # Profiles 1/2 may share an upstream bundle ID. Recheck the exact
         # executable path inside the AppKit process before requesting a
         # *normal*, PID-specific termination; never kill by bundle/name.
@@ -707,13 +705,13 @@ class MacOSPlatform(DesktopPlatform):
         return command
 
     def supervised_desktop_pid(
-        self, executable: Path, launcher: subprocess.Popen, *, deadline: float
+        self, executable: Path, launcher: subprocess.Popen, *, deadline: float, user_data: Path | None = None
     ) -> int:
         # LaunchServices owns the app process; open -W is only its lifecycle waiter.
         while time.monotonic() < deadline:
             if launcher.poll() is not None:
                 raise RuntimeError("macOS application launcher exited before Desktop started")
-            pid = self.desktop_process_id(executable)
+            pid = self.desktop_process_id(executable, user_data=user_data)
             if pid is not None:
                 return pid
             time.sleep(0.05)

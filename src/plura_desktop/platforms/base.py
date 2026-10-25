@@ -125,7 +125,7 @@ class DesktopPlatform(ABC):
         env["CODEX_APP_SERVER_WS_URL"] = app_server_url
         return DesktopLaunch(tuple(command + self.renderer_cdp_args(renderer_cdp_port)), env, self.home)
 
-    def desktop_process_id(self, executable: Path) -> int | None:
+    def desktop_process_id(self, executable: Path, *, user_data: Path | None = None) -> int | None:
         """Return the top-level desktop process for one exact app executable when observable.
 
         This is intentionally optional for platform adapters. It is used only to surface an already
@@ -135,7 +135,7 @@ class DesktopPlatform(ABC):
         return None
 
     def supervised_desktop_pid(
-        self, executable: Path, launcher: subprocess.Popen, *, deadline: float
+        self, executable: Path, launcher: subprocess.Popen, *, deadline: float, user_data: Path | None = None
     ) -> int:
         """Bind a launched desktop's identity; direct-exec platforms retain the child PID."""
         return launcher.pid

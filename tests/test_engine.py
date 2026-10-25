@@ -54,7 +54,7 @@ class EngineSelectionTests(unittest.TestCase):
         selected = TargetSession("default", "ws://127.0.0.1:12345", 1, 2, 3, engine_override_sha256=self.digest)
         with patch("plura_desktop.manager._target", return_value={"id": "default"}), patch(
             "plura_desktop.manager._metadata", return_value=self.root
-        ), patch("plura_desktop.manager._start_detached") as start:
+        ), patch.object(platform, "running_default", return_value=[3]), patch("plura_desktop.manager._start_detached") as start:
             with patch.dict(os.environ, {"CODEX_EXECUTABLE": str(self.engine), "CODEX_EXECUTABLE_SHA256": self.digest}, clear=True):
                 with patch("plura_desktop.manager.load_session", return_value=official):
                     with self.assertRaisesRegex(RuntimeError, "different Codex engine"):

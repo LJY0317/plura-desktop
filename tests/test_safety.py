@@ -142,9 +142,10 @@ class FakePlatform(DesktopPlatform):
     def desktop_launch_spec(self, executable, *, layout, app_server_url,
                             rust_log=None, renderer_cdp_port=None):
         from plura_desktop.platforms.base import DesktopLaunch
-        return DesktopLaunch((str(executable), "--app-server-url", app_server_url), dict(os.environ), self.home)
+        return DesktopLaunch((str(executable), "--app-server-url", app_server_url),
+            {**os.environ, "CODEX_ELECTRON_USER_DATA_PATH": str(layout.user_data if layout else self.default_user_data())}, self.home)
 
-    def desktop_process_id(self, executable):
+    def desktop_process_id(self, executable, *, user_data=None):
         return self.desktop_process_ids.get(str(executable))
 
     def request_desktop_quit(self, executable, desktop_pid):
@@ -1252,7 +1253,8 @@ while True: time.sleep(.05)
 def command(platform, operation, *args):
     return [sys.executable, '-c', child_code, str(home), 'desktop']
 with patch.object(FakePlatform, 'desktop_launch_spec', return_value=DesktopLaunch(
-    (sys.executable, '-c', child_code, str(home), 'desktop'), dict(os.environ), home
+    (sys.executable, '-c', child_code, str(home), 'desktop'),
+    {**os.environ, 'CODEX_ELECTRON_USER_DATA_PATH': str(FakePlatform(home, app).layout(2).user_data)}, home
 )), patch(
     'plura_desktop.manager.endpoint_ready', return_value=True
 ), patch.object(FakePlatform, 'app_server_launch', return_value=AppServerLaunch(

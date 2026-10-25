@@ -692,6 +692,18 @@ class Profile:
         self._cleanup_shared_metadata()
         print(f"Uninstalled Profile {self.index}. Official app/default profile were not targeted.")
 
+def _load_target_session(platform: DesktopPlatform, metadata: Path, target: dict[str, Any]) -> TargetSession | None:
+    session = load_session(platform, metadata, target["id"])
+    if session is not None and platform.platform_id == "macos":
+        # A restored clone can share the executable while using the default
+        # profile. PID liveness and an open backend alone do not prove ownership.
+        index = target.get("profileIndex")
+        pids = platform.running(platform.layout(index)) if isinstance(index, int) else platform.running_default()
+        if session.desktop_pid not in pids:
+            return None
+    return session
+
+
 def _target_inventory(
     platform: DesktopPlatform, *, target_id: str | None = None
 ) -> dict[str, Any]:
@@ -766,7 +778,7 @@ def _target_inventory(
             except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
                 continue
     for target in targets:
-        session = load_session(platform, metadata, target["id"])
+        session = _load_target_session(platform, metadata, target)
         target["sessionState"] = _session_state(target, session)
         target["rendererCDPState"] = _renderer_cdp_state(target, session)
     return {
@@ -828,7 +840,7 @@ def _renderer_cdp_state(target: dict[str, Any], session: TargetSession | None) -
 
 def target_session(platform: DesktopPlatform, target_id: str) -> dict[str, Any]:
     target = _target(platform, target_id)
-    session = load_session(platform, _metadata(platform), target_id)
+    session = _load_target_session(platform, _metadata(platform), target)
     state = _session_state(target, session)
     value: dict[str, Any] = {
         "contractVersion": 1,
@@ -859,7 +871,7 @@ def target_session(platform: DesktopPlatform, target_id: str) -> dict[str, Any]:
                 source = platform.resolve_executable(manifest["app_executable"])
                 executable = platform.profile_process_executable(profile.layout, source)
         if executable is not None:
-            desktop_pid = platform.desktop_process_id(executable)
+            desktop_pid = platform.desktop_process_id(executable, user_data=platform.default_user_data() if target_id == "default" else profile.layout.user_data)
             if desktop_pid is not None:
                 value["desktopProcessID"] = desktop_pid
     return value
@@ -905,7 +917,7 @@ def quit_target(
     if not isinstance(desktop_pid, int) or desktop_pid <= 0:
         raise RuntimeError(f"Exact desktop process identity is unavailable for target: {target_id}")
     executable = _target_executable(platform, target)
-    observed = platform.desktop_process_id(executable)
+    observed = platform.desktop_process_id(executable, user_data=platform.default_user_data() if target_id == "default" else platform.layout(target["profileIndex"]).user_data)
     if observed != desktop_pid:
         raise RuntimeError(f"Desktop process identity is ambiguous or changed for target: {target_id}")
     platform.request_desktop_quit(executable, desktop_pid)
@@ -969,8 +981,9 @@ def _wait_for_session(
     startup_process: subprocess.Popen[bytes] | None = None,
 ) -> TargetSession:
     deadline = time.monotonic() + timeout
+    target = _target(platform, target_id)
     while time.monotonic() < deadline:
-        session = load_session(platform, _metadata(platform), target_id)
+        session = _load_target_session(platform, _metadata(platform), target)
         if session is not None:
             if (
                 expected_responses_route_fingerprint is not None
@@ -1000,7 +1013,7 @@ def launch_target(
     renderer_cdp: bool = False,
 ) -> TargetSession:
     target = _target(platform, target_id)
-    existing = load_session(platform, _metadata(platform), target_id)
+    existing = _load_target_session(platform, _metadata(platform), target)
     engine = codex_engine_override()
     engine_sha256 = engine[1] if engine else None
     if existing is not None:
@@ -1340,7 +1353,8 @@ def _supervise_target(
         if supervisor_receipt is not None:
             supervisor_receipt.stage("supervisor_gui_identity")
         desktop_pid = platform.supervised_desktop_pid(
-            desktop_executable, desktop, deadline=startup_deadline
+            desktop_executable, desktop, deadline=startup_deadline,
+            user_data=Path(desktop_launch.environment["CODEX_ELECTRON_USER_DATA_PATH"]),
         )
         if renderer_cdp_port is not None:
             if supervisor_receipt is not None:
