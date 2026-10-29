@@ -193,7 +193,7 @@ class ReleaseDistributionTests(unittest.TestCase):
         self.assertIn("_diagnose-cli", source)
         self.assertIn("install-record", source)
         self.assertIn("codesign --verify --strict", source)
-        self.assertIn("schema=2", source)
+        self.assertIn("schema=3", source)
         self.assertNotIn("curl -fsSL", source)
 
     def test_guided_updater_can_follow_prerelease_only_distribution(self):
@@ -238,6 +238,47 @@ class ReleaseDistributionTests(unittest.TestCase):
             subprocess.run(["/bin/sh", str(uninstall)], input="REMOVE\n", env=env, capture_output=True, text=True, check=True)
             self.assertFalse(runtime.exists())
             self.assertEqual(user_data.read_text(), "user data")
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS installer integration test")
+    def test_guided_identity_survives_device_change_and_rejects_other_volume(self):
+        with tempfile.TemporaryDirectory(prefix="plura-release-reboot-", dir=ROOT) as root:
+            home = Path(root)
+            archive = self.runtime_archive(home)
+            env = {**os.environ, "HOME": str(home)}
+            arguments = ["/bin/sh", str(TEMPLATE), "--standalone", str(archive),
+                         "--version", "0.1.0", "--cli-only"]
+            subprocess.run(arguments, env=env, capture_output=True, text=True, check=True)
+            record = home / "Library/Application Support/PluraDesktop/distribution/install-record"
+            # Prior schema stored a boot-local device number. Retain real inode IDs.
+            lines = record.read_text().splitlines()
+            legacy = []
+            for line in lines:
+                key, value = line.split("=", 1)
+                if key == "schema":
+                    value = "2"
+                elif key.endswith("_identity") and value:
+                    value = "999999:" + value.rsplit(":", 1)[-1]
+                legacy.append(key + "=" + value)
+            legacy_record = "\n".join(legacy) + "\n"
+            record.write_text(re.sub(r"(?m)^runtime_identity=.*$", "runtime_identity=999999:0", legacy_record))
+            replaced = subprocess.run(arguments, env=env, capture_output=True, text=True)
+            self.assertNotEqual(replaced.returncode, 0)
+            self.assertIn("runtime identity changed", replaced.stdout + replaced.stderr)
+            record.write_text(legacy_record)
+            subprocess.run(arguments, env=env, capture_output=True, text=True, check=True)
+            self.assertIn("schema=3\n", record.read_text())
+            current = record.read_text()
+            changed = re.sub(r"(?m)^runtime_identity=[^:]+:",
+                             "runtime_identity=00000000-0000-0000-0000-000000000000:", current)
+            record.write_text(changed)
+            result = subprocess.run(arguments, env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("runtime identity changed", result.stdout + result.stderr)
+            record.write_text(current)
+            uninstall = home / "Applications/Plura Desktop Tools/Uninstall Plura Desktop.command"
+            subprocess.run(["/bin/sh", str(uninstall)], input="REMOVE\n", env=env,
+                           capture_output=True, text=True, check=True)
+            self.assertFalse(record.exists())
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS installer integration test")
     def test_guided_update_refuses_running_profile_before_runtime_swap(self):

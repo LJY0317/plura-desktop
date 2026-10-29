@@ -138,7 +138,8 @@ validate_replaceable_file() {
 }
 
 identity() {
-  stat -f '%d:%i' "$1"
+  volume_uuid=$(/usr/sbin/diskutil info -plist "$(stat -f '%Sd' "$1")" | /usr/bin/plutil -extract VolumeUUID raw -o - -) || return 1
+  printf '%s:%s\n' "$volume_uuid" "$(stat -f '%i' "$1")"
 }
 
 record_value() {
@@ -152,6 +153,15 @@ has_entries() {
   [ -n "$(find "$directory" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]
 }
 
+identity_matches() {
+  # Upgrade the old boot-local device record once; fixed paths, ownership and inode checks still apply.
+  if [ "$record_schema" = "2" ]; then
+    [ "$(stat -f '%i' "$1")" = "${2#*:}" ]
+  else
+    [ "$(identity "$1")" = "$2" ]
+  fi
+}
+
 validate_recorded_file() {
   path=$1
   expected=$2
@@ -159,7 +169,7 @@ validate_recorded_file() {
   [ -f "$path" ] && [ ! -L "$path" ] || fail "$label is missing or replaced: $path"
   owner=$(stat -f '%u' "$path" 2>/dev/null || true)
   [ "$owner" = "$current_uid" ] || fail "$label is not owned by the current user: $path"
-  [ "$(identity "$path")" = "$expected" ] || fail "$label identity changed: $path"
+  identity_matches "$path" "$expected" || fail "$label identity changed: $path"
 }
 
 python_ok() {
@@ -308,11 +318,12 @@ ensure_private_directory "$tools_dir"
 record="$distribution/install-record"
 if [ -e "$record" ] || [ -L "$record" ]; then
   validate_replaceable_file "$record"
-  [ "$(record_value "$record" schema)" = "2" ] || fail "Unsupported guided-install ownership record."
+  record_schema=$(record_value "$record" schema)
+  case "$record_schema" in 2|3) ;; *) fail "Unsupported guided-install ownership record." ;; esac
   [ -d "$runtime" ] && [ ! -L "$runtime" ] || fail "Recorded CLI runtime is missing or replaced: $runtime"
   runtime_owner=$(stat -f '%u' "$runtime" 2>/dev/null || true)
   [ "$runtime_owner" = "$current_uid" ] || fail "Recorded CLI runtime is not owned by the current user: $runtime"
-  [ "$(identity "$runtime")" = "$(record_value "$record" runtime_identity)" ] || fail "Recorded CLI runtime identity changed."
+  identity_matches "$runtime" "$(record_value "$record" runtime_identity)" || fail "Recorded CLI runtime identity changed."
   validate_recorded_file "$bin_dir/plura-desktop" "$(record_value "$record" cli_identity)" "Recorded CLI launcher"
   validate_recorded_file "$bin_dir/plura-desktop-diagnose" "$(record_value "$record" diag_identity)" "Recorded diagnostics launcher"
   validate_recorded_file "$tools_dir/Uninstall Plura Desktop.command" "$(record_value "$record" uninstall_identity)" "Recorded uninstall tool"
@@ -493,7 +504,8 @@ TOOLS="${tools_dir}"
 RECORD="${distribution}/install-record"
 
 identity() {
-  stat -f '%d:%i' "\$1"
+  volume_uuid=\$(/usr/sbin/diskutil info -plist "\$(stat -f '%Sd' "\$1")" | /usr/bin/plutil -extract VolumeUUID raw -o - -) || return 1
+  printf '%s:%s\n' "\$volume_uuid" "\$(stat -f '%i' "\$1")"
 }
 
 record_value() {
@@ -502,7 +514,7 @@ record_value() {
 }
 
 [ -f "\$RECORD" ] && [ ! -L "\$RECORD" ] || { echo "Refusing removal: installer ownership record is missing or unsafe." >&2; exit 1; }
-[ "\$(record_value schema)" = "2" ] || { echo "Refusing removal: unsupported installer ownership record." >&2; exit 1; }
+[ "\$(record_value schema)" = "3" ] || { echo "Refusing removal: unsupported installer ownership record." >&2; exit 1; }
 [ -d "${runtime}" ] && [ ! -L "${runtime}" ] || { echo "Refusing removal: CLI runtime is missing or replaced." >&2; exit 1; }
 [ "\$(identity "${runtime}")" = "\$(record_value runtime_identity)" ] || { echo "Refusing removal: CLI runtime identity changed." >&2; exit 1; }
 [ -f "\$CLI" ] && [ ! -L "\$CLI" ] || { echo "Refusing removal: CLI launcher is missing or replaced." >&2; exit 1; }
@@ -590,7 +602,7 @@ if [ "$runtime_mode" = "standalone" ]; then
 fi
 record_staging="$distribution/.install-record.$$"
 cat > "$record_staging" <<EOF
-schema=2
+schema=3
 version=${installed_version}
 mode=${runtime_mode}
 runtime_identity=${runtime_identity}

@@ -4,6 +4,10 @@ All notable public changes to Plura Desktop will be documented here from the fir
 
 ## [Unreleased]
 
+- Keep guided macOS update/removal ownership stable across reboots by recording the filesystem volume UUID instead of a boot-local device number.
+
+## [0.1.18] - 2026-10-30
+
 - Package the macOS standalone CLI as a ZIP containing an unpacked runtime folder, avoiding repeated self-extraction while keeping install/update/removal responsible for all support libraries.
 - Forward profile settings through LaunchServices, bind runtime sessions to the selected profile data, and support authenticated routed model-list overlays through the existing managed lifecycle.
 - Keep structural diagnostics bounded by age and bytes, remove permission-policy rewriting, and use actual file identities for rollout isolation checks on Windows.
