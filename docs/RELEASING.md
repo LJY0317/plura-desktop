@@ -6,9 +6,9 @@ The repository was recreated from a fresh public source snapshot on 2026-09-28. 
 
 ## Release gate
 
-Before a GitHub Release is created, the tag workflow runs the full test/package/invariant suite on macOS, Windows, and Linux with Python 3.10 and 3.12. The build job creates and verifies the wheel/source distribution. Separate Apple Silicon and Intel jobs then build one-file standalone Plura runtimes for `arm64` and `x86_64`.
+Before a GitHub Release is created, the tag workflow runs the full test/package/invariant suite on macOS, Windows, and Linux with Python 3.10 and 3.12. The build job creates and verifies the wheel/source distribution. Separate Apple Silicon and Intel jobs then build one-folder standalone Plura runtimes for `arm64` and `x86_64`, transported as `plura-desktop-macos-ARCH.zip`. Installation keeps the executable and support libraries unpacked, avoiding extraction on every CLI invocation.
 
-The macOS assembly job signs the standalone runtimes first when Developer ID credentials are available, computes SHA-256 over those final bytes, then renders a bootstrap installer bound to the exact tag, wheel, standalone filenames, and hashes. It builds a DMG containing a universal (`x86_64` + `arm64`) native `Install Plura Desktop.app`, both architecture-specific standalone runtimes, the wheel fallback, and the rendered checksum-bound installer. The final publish job creates `SHA256SUMS` across every downloadable asset before creating/updating the GitHub Release.
+Each standalone build signs its executable and collected binaries through PyInstaller when Developer ID credentials are available. The macOS assembly job computes SHA-256 over the final ZIPs, then renders a bootstrap installer bound to the exact tag, wheel, standalone filenames, and hashes. It builds a DMG containing a universal (`x86_64` + `arm64`) native `Install Plura Desktop.app`, both architecture-specific runtime ZIPs, the wheel fallback, and the rendered checksum-bound installer. The final publish job creates `SHA256SUMS` across every downloadable asset before creating/updating the GitHub Release.
 
 The release also includes `RELEASE-METADATA.json`, which records the exact immutable source tag/commit checked out for the build plus the workflow commit/run that performed the build. `SHA256SUMS` covers this metadata alongside the downloadable artifacts.
 
@@ -42,6 +42,12 @@ After the Trusted Publisher is configured, run the same workflow with an already
 Once the project exists on PyPI, the normal Python install surface may additionally use `pipx install plura-desktop` or `pip install plura-desktop`. Until then, GitHub source/release installation remains the documented public path.
 
 ## Free Homebrew distribution
+
+The folder-runtime release changes standalone asset names to ZIPs. Prepare the tap's downloader and
+formula template for those archives, including all runtime support files, before publishing the new tag.
+Keep the currently published formula pinned to its existing immutable assets. Merge the tap transition
+after the new immutable release exists and its Apple Silicon/Intel upgrade checks pass; never replace
+assets in an already-published release or add an old-format runtime fallback.
 
 The public `LJY0317/homebrew-plura` tap is the supported no-Python macOS package-manager path while Developer ID/notarization is deferred. The formula installs the architecture-specific standalone runtime from a published immutable Plura Desktop release and verifies the exact upstream SHA-256.
 

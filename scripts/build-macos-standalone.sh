@@ -24,10 +24,16 @@ trap cleanup EXIT HUP INT TERM
 mkdir -p "$output_dir"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 
+set --
+if [ -n "${PLURA_CODESIGN_IDENTITY:-}" ]; then
+  set -- --codesign-identity "$PLURA_CODESIGN_IDENTITY"
+fi
+
 pyinstaller \
   --noconfirm \
   --clean \
-  --onefile \
+  --onedir \
+  "$@" \
   --name plura-desktop \
   --paths src \
   --distpath "$tmp/dist" \
@@ -35,18 +41,19 @@ pyinstaller \
   --specpath "$tmp/spec" \
   src/plura_desktop.py >/dev/null
 
-source_binary="$tmp/dist/plura-desktop"
-target="$output_dir/plura-desktop-macos-$arch"
-cp "$source_binary" "$target"
-chmod 755 "$target"
+runtime="$tmp/dist/plura-desktop"
+source_binary="$runtime/plura-desktop"
+target="$output_dir/plura-desktop-macos-$arch.zip"
 
-actual_arches=$(lipo -archs "$target")
+actual_arches=$(lipo -archs "$source_binary")
 case " $actual_arches " in
   *" $arch "*) ;;
   *) echo "Error: standalone binary architecture mismatch: $actual_arches" >&2; exit 1 ;;
 esac
 
-"$target" --version
-"$target" _diagnose-cli --version
-codesign --verify --strict --verbose=2 "$target"
+"$source_binary" --version
+"$source_binary" _diagnose-cli --version
+codesign --verify --strict --verbose=2 "$source_binary"
+# Keep the runtime unpacked after installation; only the release transport is compressed.
+ditto -c -k --keepParent "$runtime" "$target"
 echo "$target"

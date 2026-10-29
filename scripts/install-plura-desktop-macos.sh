@@ -27,9 +27,9 @@ Usage: install-plura-desktop-macos.sh [options]
 
 Options:
   --wheel PATH       Install from a local release wheel instead of downloading it.
-  --standalone PATH  Install from a local standalone Plura binary (preferred on macOS).
+  --standalone PATH  Install from a local standalone Plura runtime ZIP (preferred on macOS).
   --standalone-sha256 HEX
-                     Verify the local standalone binary against this SHA-256 digest.
+                     Verify the local runtime archive against this SHA-256 digest.
   --version VERSION  Expected Plura Desktop version (required with an unrendered local script).
   --sha256 HEX       Verify the local wheel against this SHA-256 digest.
   --cli-only         Install/update the Plura CLI runtime without creating/refreshing profiles.
@@ -257,14 +257,20 @@ if [ -n "$standalone" ]; then
     actual_standalone_sha256=$(shasum -a 256 "$standalone" | awk '{print $1}')
     [ "$actual_standalone_sha256" = "$standalone_sha256" ] || fail "Standalone Plura runtime checksum verification failed."
   fi
+  standalone_root="$tmp_root/standalone"
+  mkdir -p "$standalone_root"
+  ditto -x -k "$standalone" "$standalone_root" || fail "Could not unpack the standalone Plura runtime."
+  standalone_root="$standalone_root/plura-desktop"
+  standalone_binary="$standalone_root/plura-desktop"
+  [ -f "$standalone_binary" ] && [ ! -L "$standalone_binary" ] || fail "Standalone Plura executable is missing or unsafe."
   if command -v lipo >/dev/null 2>&1; then
-    standalone_arches=$(lipo -archs "$standalone" 2>/dev/null || true)
+    standalone_arches=$(lipo -archs "$standalone_binary" 2>/dev/null || true)
     case " $standalone_arches " in
       *" $machine_arch "*) ;;
       *) fail "Standalone Plura runtime does not support this Mac architecture ($machine_arch)." ;;
     esac
   fi
-  codesign --verify --strict "$standalone" >/dev/null 2>&1 || fail "Standalone Plura runtime code-signature verification failed."
+  codesign --verify --strict "$standalone_binary" >/dev/null 2>&1 || fail "Standalone Plura runtime code-signature verification failed."
 else
   [ -f "$wheel" ] || fail "Release wheel not found: $wheel"
   case "$wheel" in
@@ -319,10 +325,6 @@ if [ -e "$record" ] || [ -L "$record" ]; then
   if [ "$(record_value "$record" mode)" = "standalone" ]; then
     runtime_binary="$runtime/plura-desktop"
     validate_recorded_file "$runtime_binary" "$(record_value "$record" runtime_binary_identity)" "Recorded standalone runtime"
-    for entry in "$runtime"/*; do
-      [ -e "$entry" ] || continue
-      [ "$(basename "$entry")" = "plura-desktop" ] || fail "Unexpected standalone runtime artifact: $entry"
-    done
   fi
   for entry in "$distribution"/*; do
     [ -e "$entry" ] || continue
@@ -374,7 +376,7 @@ runtime_mode="wheel"
 if [ -n "$standalone" ]; then
   runtime_mode="standalone"
   mkdir -p "$staging"
-  cp "$standalone" "$staging/plura-desktop"
+  ditto "$standalone_root" "$staging"
   chmod 700 "$staging/plura-desktop"
   installed_version=$("$staging/plura-desktop" --version | awk '{print $NF}')
   "$staging/plura-desktop" _diagnose-cli --version >/dev/null || fail "Standalone diagnostic dispatch verification failed."
@@ -520,10 +522,6 @@ fi
 if [ "\$(record_value mode)" = "standalone" ]; then
   [ -f "${runtime}/plura-desktop" ] && [ ! -L "${runtime}/plura-desktop" ] || { echo "Refusing removal: standalone runtime is missing or replaced." >&2; exit 1; }
   [ "\$(identity "${runtime}/plura-desktop")" = "\$(record_value runtime_binary_identity)" ] || { echo "Refusing removal: standalone runtime identity changed." >&2; exit 1; }
-  for entry in "${runtime}"/*; do
-    [ -e "\$entry" ] || continue
-    [ "\$(basename "\$entry")" = "plura-desktop" ] || { echo "Refusing removal: unexpected standalone runtime artifact: \$entry" >&2; exit 1; }
-  done
 fi
 
 for entry in "\$DIST"/*; do

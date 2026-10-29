@@ -165,6 +165,10 @@ jobs:
           - runner: macos-15-intel
             arch: x86_64
     runs-on: ${{ matrix.runner }}
+    env:
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -174,13 +178,27 @@ jobs:
           python-version: "3.12"
       - name: Install standalone build tooling
         run: python -m pip install "pyinstaller==6.22.3"
+      - name: Import Developer ID certificate
+        if: env.MACOS_CERTIFICATE_P12 != '' && env.MACOS_SIGNING_IDENTITY != ''
+        shell: bash
+        run: |
+          keychain="$RUNNER_TEMP/plura-signing.keychain-db"
+          cert="$RUNNER_TEMP/plura-signing.p12"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$cert"
+          security create-keychain -p temporary-password "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p temporary-password "$keychain"
+          security import "$cert" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k temporary-password "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          echo "PLURA_CODESIGN_IDENTITY=$MACOS_SIGNING_IDENTITY" >> "$GITHUB_ENV"
       - name: Build and smoke standalone runtime
         shell: bash
         run: scripts/build-macos-standalone.sh standalone "${{ matrix.arch }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: macos-standalone-${{ matrix.arch }}
-          path: standalone/plura-desktop-macos-${{ matrix.arch }}
+          path: standalone/plura-desktop-macos-${{ matrix.arch }}.zip
           if-no-files-found: error
 
   macos-dmg:
@@ -218,8 +236,8 @@ jobs:
           version="${PLURA_RELEASE_TAG#v}"
           wheel="$(find release-base -maxdepth 1 -name '*.whl' -print -quit)"
           test -n "$wheel"
-          test -f standalone/plura-desktop-macos-arm64
-          test -f standalone/plura-desktop-macos-x86_64
+          test -f standalone/plura-desktop-macos-arm64.zip
+          test -f standalone/plura-desktop-macos-x86_64.zip
           echo "PLURA_VERSION=$version" >> "$GITHUB_ENV"
           echo "PLURA_WHEEL=$wheel" >> "$GITHUB_ENV"
       - name: Import Developer ID certificate
@@ -236,22 +254,14 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k temporary-password "$keychain"
           security list-keychains -d user -s "$keychain" login.keychain-db
           echo "PLURA_CODESIGN_IDENTITY=$MACOS_SIGNING_IDENTITY" >> "$GITHUB_ENV"
-      - name: Sign standalone runtimes when Developer ID is available
-        if: env.PLURA_CODESIGN_IDENTITY != ''
-        shell: bash
-        run: |
-          for runtime in standalone/plura-desktop-macos-arm64 standalone/plura-desktop-macos-x86_64; do
-            codesign --force --options runtime --timestamp --sign "$PLURA_CODESIGN_IDENTITY" "$runtime"
-            codesign --verify --strict --verbose=2 "$runtime"
-          done
       - name: Render checksum-bound macOS installer
         shell: bash
         run: |
           mkdir -p macos-assets
           wheel_name="$(basename "$PLURA_WHEEL")"
           wheel_sha="$(shasum -a 256 "$PLURA_WHEEL" | awk '{print $1}')"
-          arm_name="plura-desktop-macos-arm64"
-          intel_name="plura-desktop-macos-x86_64"
+          arm_name="plura-desktop-macos-arm64.zip"
+          intel_name="plura-desktop-macos-x86_64.zip"
           arm_sha="$(shasum -a 256 "standalone/$arm_name" | awk '{print $1}')"
           intel_sha="$(shasum -a 256 "standalone/$intel_name" | awk '{print $1}')"
           python3 scripts/render-macos-release-installer.py \
@@ -267,8 +277,8 @@ jobs:
             --standalone-x86-64 "$intel_name" \
             --standalone-x86-64-sha256 "$intel_sha"
           sh -n macos-assets/install-plura-desktop-macos.sh
-          cp standalone/plura-desktop-macos-arm64 macos-assets/
-          cp standalone/plura-desktop-macos-x86_64 macos-assets/
+          cp standalone/plura-desktop-macos-arm64.zip macos-assets/
+          cp standalone/plura-desktop-macos-x86_64.zip macos-assets/
       - name: Build macOS installer DMG
         shell: bash
         run: |
@@ -278,8 +288,8 @@ jobs:
           scripts/build-macos-release-dmg.sh \
             "$PLURA_WHEEL" \
             macos-assets/install-plura-desktop-macos.sh \
-            macos-assets/plura-desktop-macos-arm64 \
-            macos-assets/plura-desktop-macos-x86_64 \
+            macos-assets/plura-desktop-macos-arm64.zip \
+            macos-assets/plura-desktop-macos-x86_64.zip \
             "$dmg" \
             "$PLURA_VERSION"
           echo "PLURA_DMG=$dmg" >> "$GITHUB_ENV"
@@ -287,6 +297,13 @@ jobs:
         if: env.PLURA_CODESIGN_IDENTITY != '' && env.APPLE_ID != '' && env.APPLE_TEAM_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != ''
         shell: bash
         run: |
+          for runtime in macos-assets/plura-desktop-macos-*.zip; do
+            xcrun notarytool submit "$runtime" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --wait
+          done
           xcrun notarytool submit "$PLURA_DMG" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \

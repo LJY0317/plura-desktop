@@ -28,10 +28,9 @@ app="$tmp/Install Plura Desktop.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$wheel" "$app/Contents/Resources/"
 cp "$installer" "$app/Contents/Resources/install-plura-desktop-macos.sh"
-cp "$standalone_arm64" "$app/Contents/Resources/plura-desktop-macos-arm64"
-cp "$standalone_x86_64" "$app/Contents/Resources/plura-desktop-macos-x86_64"
+cp "$standalone_arm64" "$app/Contents/Resources/plura-desktop-macos-arm64.zip"
+cp "$standalone_x86_64" "$app/Contents/Resources/plura-desktop-macos-x86_64.zip"
 chmod 700 "$app/Contents/Resources/install-plura-desktop-macos.sh"
-chmod 755 "$app/Contents/Resources/plura-desktop-macos-arm64" "$app/Contents/Resources/plura-desktop-macos-x86_64"
 
 cat > "$tmp/InstallerMain.swift" <<'EOF'
 import Foundation
@@ -79,8 +78,6 @@ cat > "$app/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-codesign --verify --strict --verbose=2 "$app/Contents/Resources/plura-desktop-macos-arm64"
-codesign --verify --strict --verbose=2 "$app/Contents/Resources/plura-desktop-macos-x86_64"
 
 if [ -n "${PLURA_CODESIGN_IDENTITY:-}" ]; then
   codesign --force --options runtime --timestamp --sign "$PLURA_CODESIGN_IDENTITY" "$app"

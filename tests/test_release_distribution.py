@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -127,11 +128,11 @@ class ReleaseDistributionTests(unittest.TestCase):
                     "--sha256",
                     sha,
                     "--standalone-arm64",
-                    "plura-desktop-macos-arm64",
+                    "plura-desktop-macos-arm64.zip",
                     "--standalone-arm64-sha256",
                     "c" * 64,
                     "--standalone-x86-64",
-                    "plura-desktop-macos-x86_64",
+                    "plura-desktop-macos-x86_64.zip",
                     "--standalone-x86-64-sha256",
                     "d" * 64,
                 ],
@@ -143,8 +144,8 @@ class ReleaseDistributionTests(unittest.TestCase):
             self.assertIn('RELEASE_REPOSITORY="example/plura-desktop"', rendered)
             self.assertIn('RELEASE_TAG="v0.1.0"', rendered)
             self.assertIn(f'RELEASE_WHEEL_SHA256="{sha}"', rendered)
-            self.assertIn('RELEASE_STANDALONE_ARM64="plura-desktop-macos-arm64"', rendered)
-            self.assertIn('RELEASE_STANDALONE_X86_64="plura-desktop-macos-x86_64"', rendered)
+            self.assertIn('RELEASE_STANDALONE_ARM64="plura-desktop-macos-arm64.zip"', rendered)
+            self.assertIn('RELEASE_STANDALONE_X86_64="plura-desktop-macos-x86_64.zip"', rendered)
             if os.name != "nt":
                 self.assertTrue(output.stat().st_mode & 0o100)
 
@@ -169,11 +170,11 @@ class ReleaseDistributionTests(unittest.TestCase):
                     "--sha256",
                     "b" * 64,
                     "--standalone-arm64",
-                    "plura-desktop-macos-arm64",
+                    "plura-desktop-macos-arm64.zip",
                     "--standalone-arm64-sha256",
                     "c" * 64,
                     "--standalone-x86-64",
-                    "plura-desktop-macos-x86_64",
+                    "plura-desktop-macos-x86_64.zip",
                     "--standalone-x86-64-sha256",
                     "d" * 64,
                 ],
@@ -204,6 +205,40 @@ class ReleaseDistributionTests(unittest.TestCase):
         self.assertIn("if [ -t 0 ]; then", source)
         self.assertIn('echo "Update finished. Press Return to close."', source)
 
+    @staticmethod
+    def runtime_archive(home: Path) -> Path:
+        source = home / "standalone.c"
+        source.write_text('#include <stdio.h>\nint main(void) { puts("Plura Desktop 0.1.0"); return 0; }\n', encoding="utf-8")
+        executable = home / "plura-desktop-standalone"
+        subprocess.run(["xcrun", "clang", str(source), "-o", str(executable)], check=True)
+        subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(executable)], check=True)
+        archive = home / "runtime.zip"
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.write(executable, "plura-desktop/plura-desktop")
+            bundle.writestr("plura-desktop/_internal/owned-runtime-resource", "support file")
+        return archive
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS installer integration test")
+    def test_guided_folder_runtime_update_and_removal_own_support_files(self):
+        with tempfile.TemporaryDirectory(prefix="plura-release-folder-", dir=ROOT) as root:
+            home = Path(root)
+            archive = self.runtime_archive(home)
+            user_data = home / ".codex-profile2/keep"
+            user_data.parent.mkdir()
+            user_data.write_text("user data", encoding="utf-8")
+            env = {**os.environ, "HOME": str(home)}
+            arguments = ["/bin/sh", str(TEMPLATE), "--standalone", str(archive),
+                         "--standalone-sha256", hashlib.sha256(archive.read_bytes()).hexdigest(),
+                         "--version", "0.1.0", "--cli-only"]
+            runtime = home / "Library/Application Support/PluraDesktop/distribution/cli-runtime"
+            for _ in range(2):
+                subprocess.run(arguments, env=env, capture_output=True, text=True, check=True)
+                self.assertEqual((runtime / "_internal/owned-runtime-resource").read_text(), "support file")
+            uninstall = home / "Applications/Plura Desktop Tools/Uninstall Plura Desktop.command"
+            subprocess.run(["/bin/sh", str(uninstall)], input="REMOVE\n", env=env, capture_output=True, text=True, check=True)
+            self.assertFalse(runtime.exists())
+            self.assertEqual(user_data.read_text(), "user data")
+
     @unittest.skipUnless(sys.platform == "darwin", "macOS installer integration test")
     def test_guided_update_refuses_running_profile_before_runtime_swap(self):
         with tempfile.TemporaryDirectory(prefix="plura-release-running-", dir=ROOT) as root:
@@ -214,12 +249,8 @@ class ReleaseDistributionTests(unittest.TestCase):
             control.write_text('#!/bin/sh\nprintf \'%s\\n\' \'{"state": "running"}\'\n', encoding="utf-8")
             control.chmod(0o700)
             (meta / "profile-2-install-manifest.json").write_text("{}\n", encoding="utf-8")
-            source = home / "standalone.c"
-            source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-            standalone = home / "plura-desktop-standalone"
-            subprocess.run(["xcrun", "clang", str(source), "-o", str(standalone)], check=True)
-            subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(standalone)], check=True)
-            digest = hashlib.sha256(standalone.read_bytes()).hexdigest()
+            archive = self.runtime_archive(home)
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
             env = dict(os.environ)
             env["HOME"] = str(home)
             result = subprocess.run(
@@ -227,7 +258,7 @@ class ReleaseDistributionTests(unittest.TestCase):
                     "/bin/sh",
                     str(TEMPLATE),
                     "--standalone",
-                    str(standalone),
+                    str(archive),
                     "--standalone-sha256",
                     digest,
                     "--version",

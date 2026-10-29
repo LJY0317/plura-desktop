@@ -49,7 +49,7 @@ def main() -> int:
         (args.standalone_arm64, args.standalone_arm64_sha256),
         (args.standalone_x86_64, args.standalone_x86_64_sha256),
     ):
-        if not re.fullmatch(r"plura-desktop-macos-(arm64|x86_64)", name):
+        if not re.fullmatch(r"plura-desktop-macos-(arm64|x86_64)\.zip", name):
             parser.error("standalone filenames must be canonical macOS architecture names")
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             parser.error("standalone SHA-256 values must be lowercase digests")
