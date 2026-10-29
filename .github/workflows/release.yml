@@ -148,7 +148,7 @@ jobs:
           release-smoke/bin/python -m pip install --no-deps dist/*.whl
           release-smoke/bin/plura-desktop --version
           release-smoke/bin/plura-desktop-diagnose --help
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-base
           path: dist/
@@ -195,7 +195,7 @@ jobs:
       - name: Build and smoke standalone runtime
         shell: bash
         run: scripts/build-macos-standalone.sh standalone "${{ matrix.arch }}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-standalone-${{ matrix.arch }}
           path: standalone/plura-desktop-macos-${{ matrix.arch }}.zip
@@ -317,7 +317,7 @@ jobs:
       - name: Stage macOS release assets
         shell: bash
         run: cp "$PLURA_DMG" macos-assets/
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-assets
           path: macos-assets/
