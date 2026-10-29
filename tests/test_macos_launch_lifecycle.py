@@ -22,7 +22,8 @@ class MacOSLaunchLifecycleTests(unittest.TestCase):
             executable = home / "ChatGPT.app/Contents/MacOS/ChatGPT"
             platform = MacOSPlatform(home=home, app_override=executable)
             for index in (None, 2):
-                with self.subTest(index=index), patch("os.chdir"), patch("os.execve") as execute:
+                with (self.subTest(index=index), patch("os.chdir"), patch("os.execve") as execute,
+                      patch.object(platform, "_current_username", return_value="fixture-user")):
                     if index is None:
                         platform.launch_default(executable, app_server_url="ws://127.0.0.1:12345")
                         expected_home = home / ".codex"
@@ -50,7 +51,8 @@ class MacOSLaunchLifecycleTests(unittest.TestCase):
             home = Path(directory).resolve()
             executable = home / "ChatGPT.app/Contents/MacOS/ChatGPT"
             platform = MacOSPlatform(home=home, app_override=executable)
-            with patch("os.execve") as execute, patch("os.chdir") as change:
+            with (patch("os.execve") as execute, patch("os.chdir") as change,
+                  patch.object(platform, "_current_username", return_value="fixture-user")):
                 spec = platform.desktop_launch_spec(executable, layout=platform.layout(2),
                     app_server_url="ws://127.0.0.1:12345", rust_log="info")
             execute.assert_not_called()

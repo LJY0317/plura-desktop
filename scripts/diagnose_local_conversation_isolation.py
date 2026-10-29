@@ -161,7 +161,8 @@ def _rollouts(root: Path) -> dict[str, object]:
                     if entry.is_dir(follow_symlinks=False):
                         # Protection against accidental directory hardlinks or
                         # loops in unsupported/virtual filesystem layouts.
-                        item = entry.stat(follow_symlinks=False)
+                        # DirEntry.stat reports zero device/inode on Windows.
+                        item = os.stat(entry.path, follow_symlinks=False)
                         key = (item.st_dev, item.st_ino)
                         if key not in visited:
                             visited.add(key)
@@ -169,7 +170,7 @@ def _rollouts(root: Path) -> dict[str, object]:
                     elif (entry.name.startswith("rollout-")
                           and entry.name.endswith(".jsonl")
                           and entry.is_file(follow_symlinks=False)):
-                        item = entry.stat(follow_symlinks=False)
+                        item = os.stat(entry.path, follow_symlinks=False)
                         inodes.add((item.st_dev, item.st_ino))
                         names.add(entry.name)
         result.update(count=len(names), scan="complete")
