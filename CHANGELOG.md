@@ -4,6 +4,10 @@ All notable public changes to Plura Desktop will be documented here from the fir
 
 ## [Unreleased]
 
+- Package the macOS standalone CLI as a ZIP containing an unpacked runtime folder, avoiding repeated self-extraction while keeping install/update/removal responsible for all support libraries.
+- Forward profile settings through LaunchServices, bind runtime sessions to the selected profile data, and support authenticated routed model-list overlays through the existing managed lifecycle.
+- Keep structural diagnostics bounded by age and bytes, remove permission-policy rewriting, and use actual file identities for rollout isolation checks on Windows.
+
 ## [0.1.17] - 2026-10-02
 
 - Make macOS managed-profile selector refresh transactional: build and validate a complete replacement `Contents` tree before atomically exchanging it with the live selector, preserving the selector app and its manifest-owned identity if preparation fails.
