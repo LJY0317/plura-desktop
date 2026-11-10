@@ -351,8 +351,6 @@ plura-desktop diagnostics-off --profile 2
 
 The trace setting is stored in the profile manifest and takes effect on the next normal launch. It never accepts arbitrary log filters from the manifest.
 
-When an active app-server proxy fails, it records one structural transport incident under owned metadata at `diagnostics/runtime/<target-hash>/incidents/`. It records the direction, failure category and message byte counters, never payloads, credentials or conversation content. Healthy traffic produces no incident and no background sampler runs. Each target retains at most 10 summaries of at most 256 KiB each. Final managed-profile removal validates and removes this shared runtime evidence; socket delivery counters do not prove that Desktop rendered a response.
-
 `diagnostics-status` also summarizes the latest retained permission resume: whether the request explicitly supplied permissions, whether forwarding changed their classifications, and what Native reported. This is diagnostic evidence, not a test of effective execution permissions. Missing or truncated evidence is labeled; identifiers and custom permission names are never displayed.
 
 The packaged `plura-desktop-diagnose` command is **explicitly macOS-specific** because it consumes the currently documented/observed macOS Desktop log boundary. It is on-demand and read-only. It may query only the allowlisted structural targets in `CODEX_HOME/logs_2.sqlite`; it never opens authentication/profile/state databases or emits prompts, results, private MCP names, raw conversation/thread IDs, or private paths.
