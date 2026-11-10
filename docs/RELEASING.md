@@ -90,7 +90,7 @@ The installer also creates local Update/Uninstall commands in `~/Applications/Pl
 
 The generated Update command resolves the newest **published** GitHub Release through the public releases API, intentionally including prereleases. This keeps updates functional during the free unsigned-release phase, when GitHub's `/releases/latest` endpoint has no normal release to return. The updater then downloads the release-bound installer from that exact tag; the installer's embedded filenames and SHA-256 values remain the authority for the actual runtime/wheel bytes.
 
-Guided distribution-runtime replacement is stricter than selector-only `refresh`: if an existing managed profile is not proven stopped, install/update refuses before swapping the standalone runtime. This avoids mixing a live supervisor from one release with child/control processes from another release.
+Guided distribution-runtime replacement is stricter than selector-only `refresh`: if an existing managed profile is not proven stopped, install/update refuses before swapping the standalone runtime. This preserves the identity of project-owned launch artifacts and derived app files used by a running profile. Native engine shutdown remains the official app's responsibility.
 
 ## Tagging
 

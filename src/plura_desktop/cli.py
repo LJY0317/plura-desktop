@@ -7,99 +7,29 @@ import subprocess
 import sys
 
 from .domain import DEFAULT_MANAGED_PROFILE_INDEX
-from .manager import (
-    Profile,
-    launch_target,
-    quit_target,
-    public_targets,
-    supervise_target,
-    target_session,
-)
+from .manager import Profile, launch_target, public_targets, quit_target, target_session
 from .platforms import current_platform
-from .routing import ResponsesRoute
-from .model_list_overlay import ModelListOverlay
 from .version import __version__
 
-
 PUBLIC_COMMANDS = (
-    "install",
-    "launch",
-    "status",
-    "refresh",
-    "uninstall",
-    "targets",
-    "launch-target",
-    "quit-target",
-    "target-session",
-    "diagnostics-on",
-    "diagnostics-off",
-    "diagnostics-status",
-)
-INTERNAL_COMMANDS = (
-    "_supervise-target",
+    "install", "launch", "status", "refresh", "uninstall", "targets",
+    "launch-target", "quit-target", "target-session",
+    "diagnostics-on", "diagnostics-off", "diagnostics-status",
 )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Manage Plura Desktop profiles for ChatGPT Desktop."
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"Plura Desktop {__version__}",
-    )
-    parser.add_argument(
-        "command",
-        choices=PUBLIC_COMMANDS + INTERNAL_COMMANDS,
-        metavar="COMMAND",
-        help="Public commands: " + ", ".join(PUBLIC_COMMANDS),
-    )
-    parser.add_argument(
-        "--profile",
-        type=int,
-        default=DEFAULT_MANAGED_PROFILE_INDEX,
-        help="Managed profile index (2-99; default: 2)",
-    )
+    parser = argparse.ArgumentParser(description="Manage isolated profiles for official ChatGPT Desktop.")
+    parser.add_argument("--version", action="version", version=f"Plura Desktop {__version__}")
+    parser.add_argument("command", choices=PUBLIC_COMMANDS)
+    parser.add_argument("--profile", type=int, default=DEFAULT_MANAGED_PROFILE_INDEX,
+                        help="Managed profile index (2-99; default: 2)")
     parser.add_argument("--target", help="Target ID from targets --json")
     parser.add_argument("--expected-desktop-pid", type=int,
                         help="For quit-target, require the exact Desktop PID observed before confirmation")
-    parser.add_argument(
-        "--responses-base-url",
-        help=(
-            "Optional loopback http://.../v1 Responses provider for launch-target. "
-            "Requires --responses-env-key."
-        ),
-    )
-    parser.add_argument(
-        "--responses-env-key",
-        help=(
-            "Environment variable containing the Responses provider bearer secret. "
-            "The secret value is inherited, never placed on the command line."
-        ),
-    )
-    parser.add_argument("--responses-runtime-header-name", help="Optional provider header sourced from the Responses credential environment key")
-    parser.add_argument("--startup-model-catalog", action="store_true", help="Build a launch-scoped catalog through the model overlay")
-    parser.add_argument("--model-catalog-json", help="Optional startup model catalog for an explicit Responses route")
-    parser.add_argument("--model-list-overlay-url", help="Optional loopback model-list callback for a routed target")
-    parser.add_argument("--model-list-overlay-env-key", help="Environment key containing the model-list callback token")
-    parser.add_argument(
-        "--app",
-        help=(
-            "ChatGPT executable path. macOS has a canonical default; Windows/Linux "
-            "may require this or CHATGPT_EXECUTABLE."
-        ),
-    )
-    parser.add_argument(
-        "--renderer-cdp",
-        action="store_true",
-        help=(
-            "Expose a loopback-only Chromium renderer debugging endpoint for this "
-            "canonical target session."
-        ),
-    )
+    parser.add_argument("--app", help="Official ChatGPT executable path")
     parser.add_argument("--yes", action="store_true", help="Apply uninstall; default is dry run")
-    parser.add_argument("--json", action="store_true", help="Emit the stable JSON contract where supported")
+    parser.add_argument("--json", action="store_true", help="Emit the public version 2 contract")
     return parser
 
 
@@ -108,34 +38,6 @@ def main(argv: list[str] | None = None) -> int:
         os.umask(0o077)
     args = build_parser().parse_args(argv)
     try:
-        responses_route = None
-        if args.responses_base_url is not None or args.responses_env_key is not None:
-            if not args.responses_base_url or not args.responses_env_key:
-                raise ValueError("Responses routing requires both --responses-base-url and --responses-env-key")
-            credential = os.environ.get(args.responses_env_key)
-            if credential is None:
-                raise ValueError(
-                    f"Responses route credential environment variable is missing: {args.responses_env_key}"
-                )
-            responses_route = ResponsesRoute.create(
-                args.responses_base_url,
-                args.responses_env_key,
-                credential,
-                args.responses_runtime_header_name,
-                args.model_catalog_json,
-            )
-        elif args.responses_runtime_header_name is not None or args.model_catalog_json is not None:
-            raise ValueError("Responses runtime header requires a Responses route")
-        model_list_overlay = None
-        if args.model_list_overlay_url is not None or args.model_list_overlay_env_key is not None:
-            if not args.model_list_overlay_url or not args.model_list_overlay_env_key or responses_route is None:
-                raise ValueError("Model-list overlay requires a routed target, URL, and environment key")
-            token = os.environ.get(args.model_list_overlay_env_key)
-            if token is None:
-                raise ValueError("Model-list overlay credential environment variable is missing")
-            model_list_overlay = ModelListOverlay.create(
-                args.model_list_overlay_url, args.model_list_overlay_env_key, token,
-            )
         platform = current_platform(app_override=args.app)
         if args.command == "targets":
             value = public_targets(platform)
@@ -143,77 +45,35 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(value, indent=2, sort_keys=True))
             else:
                 for target in value["targets"]:
-                    state = target.get("state", "external")
-                    print(f"{target['id']}: {target['displayName']} ({state})")
+                    print(f"{target['id']}: {target['displayName']} ({target['state']})")
             return 0
-
-        if args.command == "launch-target":
+        if args.command in {"launch-target", "target-session", "quit-target"}:
             if not args.target:
-                raise ValueError("launch-target requires --target")
-            launch_target(
-                platform,
-                args.target,
-                responses_route=responses_route,
-                model_list_overlay=model_list_overlay,
-                startup_model_catalog=args.startup_model_catalog,
-                renderer_cdp=args.renderer_cdp,
-            )
-            if args.json:
-                print(json.dumps(target_session(platform, args.target), indent=2, sort_keys=True))
-            return 0
-        if args.command == "target-session":
-            if not args.target:
-                raise ValueError("target-session requires --target")
-            value = target_session(platform, args.target)
+                raise ValueError(f"{args.command} requires --target")
+            if args.command == "quit-target":
+                value = quit_target(platform, args.target, expected_desktop_pid=args.expected_desktop_pid)
+            else:
+                action = launch_target if args.command == "launch-target" else target_session
+                value = action(platform, args.target)
             if args.json:
                 print(json.dumps(value, indent=2, sort_keys=True))
             else:
                 print(f"{value['targetID']}: {value['state']}")
             return 0
-        if args.command == "quit-target":
-            if not args.target:
-                raise ValueError("quit-target requires --target")
-            value = quit_target(platform, args.target, **({"expected_desktop_pid": args.expected_desktop_pid}
-                                if args.expected_desktop_pid is not None else {}))
-            if args.json:
-                print(json.dumps(value, indent=2, sort_keys=True))
-            else:
-                print(f"{value['targetID']}: {value['state']}")
-            return 0
-        if args.command == "_supervise-target":
-            if not args.target:
-                raise ValueError("_supervise-target requires --target")
-            return supervise_target(
-                platform,
-                args.target,
-                responses_route=responses_route,
-                model_list_overlay=model_list_overlay,
-                startup_model_catalog=args.startup_model_catalog,
-                renderer_cdp=args.renderer_cdp,
-            )
-
         profile = Profile(index=args.profile, platform=platform)
         if args.command == "uninstall":
             profile.uninstall(args.yes)
         elif args.command == "status":
             profile.status(json_output=args.json)
-        elif args.command == "diagnostics-on":
-            profile.set_tool_lifecycle_diagnostics(True)
-        elif args.command == "diagnostics-off":
-            profile.set_tool_lifecycle_diagnostics(False)
+        elif args.command in {"diagnostics-on", "diagnostics-off"}:
+            profile.set_tool_lifecycle_diagnostics(args.command == "diagnostics-on")
         elif args.command == "diagnostics-status":
             profile.diagnostics_status()
         elif args.command == "launch":
             launch_target(platform, profile.identifier)
         else:
             getattr(profile, args.command)()
-    except (
-        OSError,
-        ValueError,
-        RuntimeError,
-        KeyError,
-        subprocess.SubprocessError,
-    ) as error:
+    except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as error:
         print("Error:", error, file=sys.stderr)
         if args.command == "launch":
             try:

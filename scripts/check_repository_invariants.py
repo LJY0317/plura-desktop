@@ -55,7 +55,6 @@ MAX_TRACKED_FILE_BYTES = 5 * 1024 * 1024
 CORE_FILES = (
     ROOT / "src/plura_desktop/domain.py",
     ROOT / "src/plura_desktop/manager.py",
-    ROOT / "src/plura_desktop/runtime.py",
     ROOT / "src/plura_desktop/cli.py",
 )
 CORE_OBSERVATIONAL_TOKENS = (

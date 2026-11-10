@@ -13,7 +13,7 @@
 
 ## 빠른 시작
 
-**현재 로그인까지 포함한 전체 공식 앱 E2E가 검증된 경로는 Apple Silicon macOS**입니다. Intel standalone runtime은 GitHub의 Intel macOS runner에서 native build/smoke까지 검증했지만 Intel 공식 앱 E2E는 별도 gate로 남아 있습니다. Windows는 공통 core/CI 검증만 완료되어 실기기 gate가 남아 있습니다. Linux는 한 단계 더 나아가 CI가 OpenAI의 현재 공식 [데스크톱 preview](https://learn.chatgpt.com/docs/linux/linux-app) `.deb`를 직접 설치하고 실제 packaged Desktop/bundled Codex를 탐색한 뒤 Xvfb에서 generated selector를 canonical renderer-enabled ready session까지 실행합니다. 다만 실제 사용자 로그인 지속성 및 정상 quit/refresh/uninstall 전체 흐름은 별도 real-user gate로 남아 있습니다.
+이전 릴리스의 Apple Silicon macOS 로그인 포함 E2E와 새 실행 경로의 검증은 구분합니다. 새 경로는 격리된 실제 macOS 앱에서 공식 앱 소유 Native 엔진 생성·정상 종료까지 확인했습니다. 로그인 상태의 Native/browser 도구 실수락, Intel·Windows·Linux 공식 앱 E2E는 별도 배포 게이트입니다. Linux Xvfb CI도 새 경로로 갱신했으며 실행 결과를 확인해야 합니다.
 
 GitHub Releases에 suffix 없는 **`Plura-Desktop-VERSION-macOS.dmg`**가 실제로 있을 때 그 notarized/stapled DMG가 macOS 권장 설치 경로입니다. 그 전까지는 **Homebrew가 가장 간단한 지원 macOS 설치 경로**이며 별도 Python 환경이 필요하지 않습니다. source/package 경로도 portable fallback으로 유지합니다. `-unsigned.dmg`나 `-signed.dmg`를 일반 사용자용 installer로 취급하지 않습니다.
 
@@ -185,17 +185,12 @@ brew uninstall plura-desktop
 
 - **`plura-desktop: command not found`** — Plura Desktop을 설치한 격리 환경/package tool에서 실행하거나 해당 tool의 일반적인 PATH 설정을 확인합니다. 활성화된 venv라면 `python -m plura_desktop --version`도 같은 fallback입니다. console script만 따로 복사하지 않습니다.
 - **Windows/Linux에서 `ChatGPT executable not found`** — 실제 실행 파일을 `--app PATH`로 넘기거나 `CHATGPT_EXECUTABLE`을 설정합니다. 알 수 없는 설치 layout을 추측하지 않습니다.
-- **`restart-required`** — 요청한 canonical capability/session 밖에서 이미 실행 중입니다. 해당 ChatGPT 창을 한 번 정상 종료한 뒤 Plura Desktop으로 다시 실행합니다.
 
 ## 소유권 규칙
 
-핵심 불변식은 하나입니다.
+공식 앱이 Native 실행·도구·엔진 수명을 소유합니다. Plura는 profile identity, manifest, 격리된 상태 경로와 selector의 설치·갱신·제거를 소유합니다. 원본 앱과 계정 데이터는 변경하지 않습니다.
 
-> 하나의 managed profile에는 하나의 authoritative runtime만 존재합니다. lifecycle-bound supervisor 하나가 공식 Desktop 하나와 loopback Codex app-server 하나를 함께 소유하며, 모든 managed 실행 경로는 이 runtime으로 합쳐집니다. 사용자가 별도의 "shared 모드"를 선택할 필요가 없습니다.
-
-공통 core는 profile identity, manifest, allowlist, install/refresh/uninstall lifecycle, 진단 설정, 외부용 target contract를 담당합니다. 실행 파일 탐색, selector, 프로세스 확인, 파일 정체성, 환경 구성과 OS 오류 UI는 각 플랫폼 adapter가 담당합니다.
-
-watcher, idle polling daemon, login item, updater, background sampler는 없습니다. supervisor는 managed profile이 실제 실행 중일 때만 존재하며 Desktop/app-server와 함께 종료됩니다.
+별도 Native 엔진, 중계, supervisor, 상주 감시를 시작하지 않습니다. 이미 실행 중인 프로필은 재사용하고, 정상 종료는 공식 앱에 맡깁니다.
 
 ## 제품 원칙
 
@@ -217,7 +212,7 @@ Linux는 XDG 환경 변수가 없으면 `~/.local/share`, `~/.config`, `~/.local
 
 `PluraDesktop` metadata 내부의 역할도 고정합니다. `profile-N-install-manifest.json`은 ownership/provenance state, `control-runtime`은 refresh 가능한 설치 코드, `runtime-sessions`는 live runtime용 임시 claim/descriptor, macOS `runtime-apps/profile-N` 및 Windows/Linux `profile-N-runtime`은 재생성 가능한 derived runtime입니다. 선택적으로 저장하는 진단 증거는 `diagnostics/profile-N/incidents` 아래에만 두며 프로필·runtime 진단 전체 32MiB/30일, incident당 최대 256 KiB로 제한합니다. macOS 간편 installer를 사용한 경우 `distribution/cli-runtime`과 `bin`은 installer-owned standalone CLI runtime/launcher이며 full uninstall 도구가 managed profile 제거 후 함께 정리합니다. 별도 background cache/telemetry/rolling product log는 만들지 않습니다.
 
-Apple Silicon macOS에서는 현재 공식 ChatGPT 앱으로 로그인까지 포함한 실제 E2E를 검증했습니다. `/Applications/ChatGPT.app` 원본은 항상 read-only이며 애플리케이션 업데이트의 유일한 기준입니다. managed profile용 runtime clone은 launcher metadata 아래의 재생성 가능한 disposable derived code이고, 공식 앱 업데이트나 managed clone 변경이 감지되면 다음 cold launch 전에 공식 앱 기준으로 다시 맞춥니다. Intel macOS standalone은 native Intel GitHub runner에서 build/smoke까지 통과했지만 Intel 공식 앱 E2E는 아직 별도 gate입니다. Windows는 CI에서 fake executable로 공통 lifecycle, selector, 경로/환경 contract를 검증합니다. Linux는 이 공통 CI에 더해 OpenAI의 현재 공식 Ubuntu/Debian preview package를 Ubuntu 24.04 runner에 실제 설치하고, `chatgpt` wrapper → 실제 `ChatGPT` executable, bundled `resources/codex`, 좁은 GUI session 환경, isolated Profile 2 설치, generated selector를 통한 renderer-enabled canonical launch까지 검증합니다. **다만 실제 사용자 로그인 유지, default profile과의 독립 사용, product 정상 quit, refresh/uninstall 전체 실사용 흐름은 아직 별도 gate입니다.**
+새 경로는 Apple Silicon macOS의 격리된 실제 앱 실행·정상 종료까지 확인했습니다. 원본 앱은 read-only이고 프로필의 로그인·대화 경로는 보존합니다. 로그인 포함 Native/browser 실수락과 Intel·Windows·Linux 공식 앱 검증은 새 배포 전 확인해야 합니다. 이전 릴리스의 E2E 결과를 새 경로 전체의 검증으로 간주하지 않습니다.
 
 Windows/Linux를 실제 지원으로 표시하기 위한 정확한 실기기 gate는 [PLATFORM_VERIFICATION.md](PLATFORM_VERIFICATION.md)에 고정합니다.
 
@@ -244,41 +239,20 @@ Windows/Linux에서 실행 파일을 자동 탐색할 수 없으면 `--app PATH`
 
 처음 Profile 2를 설정할 때는 `status --profile 2`로 미설치 상태를 확인하고, `install --profile 2` → `launch --profile 2` 순서로 실행한 뒤 새 Profile 2 창에서 정상 로그인합니다. 기존 profile DB나 cookie를 복사하지 않습니다. 이후에는 필요할 때 `status`/진단을 사용하고, package 갱신 후 `refresh`, 제거 시에는 먼저 dry-run `uninstall`을 검토한 뒤 `--yes`를 적용합니다.
 
-## 외부용 target contract
+## 외부용 target contract v2
 
-외부 도구는 selector 경로, `CODEX_HOME`, profile별 포트 등을 재구성하지 말고 설치된 control CLI와 다음 JSON contract를 사용해야 합니다. macOS/Linux는 플랫폼 metadata 디렉터리의 `plura-desktop`, Windows는 `plura-desktop.cmd`가 control CLI입니다.
+공식 앱이 Native 엔진·도구·종료를 소유합니다. Plura는 프로필 격리와 앱 실행만 담당하며 별도 엔진·중계·감시 프로세스를 시작하지 않습니다.
 
 ```sh
 plura-desktop targets --json
+plura-desktop launch-target --target local.plura-desktop.profile2 --json
+plura-desktop target-session --target local.plura-desktop.profile2 --json
+plura-desktop quit-target --target local.plura-desktop.profile2 --expected-desktop-pid PID --json
 ```
 
-contract version 1은 target ID, 표시 이름, lifecycle 상태, ownership/backend policy, canonical session 상태를 노출하고 private profile path는 내보내지 않습니다.
+`contractVersion: 2`, `backendPolicy: "official-desktop-owned"`와 실제 앱의 `running`/`stopped` 상태를 제공합니다. 실행 요청 수락은 `launch-requested`이며 로그인·도구 준비 완료를 뜻하지 않습니다. PID를 확인할 수 있는 플랫폼에서는 `desktopProcessID`도 제공합니다. 정상 종료를 지원하지 않는 플랫폼에서는 강제 종료 대신 제한을 알립니다.
 
-외부 controller는 selector나 profile index를 재구성하지 않고 target ID로 실행합니다.
-
-```sh
-plura-desktop launch-target --target local.plura-desktop.profile2
-```
-
-`launch-target` 자체가 canonical managed-profile 실행 경로입니다. 설치된 `ChatGPT Profile N` selector, 메뉴바, 향후 controller는 모두 이 명령으로 수렴해야 합니다. stopped target을 시작하면 하나의 app-server + Desktop pair를 만들고, 이미 canonical session이 살아 있으면 그대로 재사용합니다. 과거 방식으로 private Desktop이 실행 중이면 두 번째 writer를 만들지 않고 한 번의 정상 종료를 요구합니다.
-
-launch-time Responses route가 활성화된 경우 supervisor는 실제 Codex app-server를 private loopback endpoint에 두고, Desktop/controller에는 별도의 loopback WebSocket endpoint를 노출합니다. 대화의 공급자 ID는 내장 `openai`로 유지하므로 route 제거 후 일반 Desktop에서도 재개할 수 있습니다. ChatGPT Desktop의 config reload 이후에도 route를 유지하기 위해 노출 endpoint는 `thread/start`, `thread/resume`, `thread/fork`에만 secret-free `openai_base_url`과 공급자 선택을 적용합니다. 그 외 app-server 메시지는 그대로 전달합니다. 로컬 Responses 서버는 내장 공급자가 보내는 `OpenAI-Organization` 헤더로 credential을 검증하고, Native upstream 전달 전에 이 헤더를 제거해야 합니다. 기존 `OPENAI_ORGANIZATION` 값이 있으면 덮어쓰지 않고 실행을 거부합니다. 사용자 `config.toml`과 공식 ChatGPT 앱은 수정하지 않습니다.
-
-원격/브리지 통합이 live runtime endpoint가 필요하면 다음 local-only contract를 사용합니다.
-
-```sh
-plura-desktop target-session --target TARGET_ID --json
-```
-
-endpoint는 동적으로 할당되는 loopback 주소이며 lifetime은 Plura Desktop이 소유합니다. 외부 프로젝트는 attach만 하고 별도 fallback app-server를 만들지 않습니다.
-
-Desktop target이 canonical runtime 밖에서 이미 실행 중이면 `target-session --json`은 계속 `restart-required`를 반환합니다. 다만 exact top-level Desktop process를 증명할 수 있는 플랫폼에서는 `desktopProcessID`도 함께 제공할 수 있습니다. 이는 기존 앱을 foreground하기 위한 관찰 정보일 뿐 canonical runtime ownership을 부여하지 않습니다.
-
-패키지 업데이트 후 설치된 selector/runtime만 갱신하려면:
-
-```sh
-plura-desktop refresh --profile 2
-```
+**v1과 호환되지 않습니다.** 외부 app-server endpoint, engine override, Responses 중계, 모델 목록 콜백·catalog overlay, renderer CDP 기능과 옵션을 제거했습니다. 외부 연계 제품이 v2에 대응한 후 설치해야 합니다. 모델 공급자는 공식 앱의 설정으로 등록하며 Plura가 설정·계정을 대신 변경하지 않습니다. 이전 버전으로 실행 중인 프로필은 한 번 정상 종료하고, 업데이트 후 selector를 refresh합니다.
 
 ## 진단
 

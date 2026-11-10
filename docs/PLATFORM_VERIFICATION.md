@@ -4,7 +4,9 @@ This document is the release gate for behavior that fake-executable CI cannot pr
 
 Record the OS/version, ChatGPT Desktop version and installation source, Plura Desktop commit, executable path used, and the final pass/fail result. Do not attach credentials, cookies, profile databases, conversation content, or unredacted private paths to verification evidence.
 
-The repository's scheduled `Official Linux package smoke` workflow is an intermediate gate, not a substitute for this full flow. It downloads OpenAI's documented current Ubuntu/Debian package, verifies the packaged Desktop and bundled Codex executable boundary, installs an isolated managed profile, starts the bundled app-server, and runs the generated selector to a renderer-enabled canonical session under Xvfb. It deliberately does not automate a real user sign-in or claim that CI process cleanup is a supported normal-quit lifecycle.
+The repository's scheduled `Official Linux package smoke` is an intermediate gate. It installs
+an isolated managed profile and launches the official Desktop under Xvfb. It must verify Desktop-owned
+Native execution without a Plura app-server or supervisor. This is not signed-in or normal-quit acceptance.
 
 ## Verification flow
 
@@ -14,7 +16,7 @@ Use a disposable managed Profile 2. Do not copy an existing profile into it.
 2. Run `plura-desktop install --profile 2` using normal executable discovery. On Linux, the current official preview documents the executable command as `chatgpt`, which Plura Desktop searches on `PATH`; verify that normal discovery resolves that installed command before trying an override. If discovery is unavailable on Windows/Linux, repeat with the documented `--app PATH` override and record that discovery remains unverified.
 3. Run `plura-desktop launch --profile 2`. Confirm the official ChatGPT Desktop executable starts with an isolated managed profile and the default profile remains independently usable.
 4. Sign in normally inside Profile 2, quit it normally, relaunch it, and confirm that the managed login/profile state persists without copying authentication files.
-5. Run `plura-desktop targets --json` and confirm one `local.plura-desktop.profile2` managed target, no private profile paths in the public contract, and lifecycle state consistent with the running/stopped app.
+5. Confirm that the official Desktop creates its own Native engine, that Native app/browser tools work, and that no Plura-owned engine/proxy is running. Run `plura-desktop targets --json` and confirm one `local.plura-desktop.profile2` managed target, no private profile paths in the public contract, and lifecycle state consistent with the running/stopped app.
 6. Quit Profile 2 normally. On macOS guided installs, exercise `Update Plura Desktop.command` with a candidate update/reinstall when practical; otherwise run `plura-desktop refresh --profile 2`. Relaunch and confirm login/profile state remains intact.
 7. Run `plura-desktop diagnostics-status --profile 2`. macOS should report native structural diagnostics support; Windows/Linux should clearly report that the macOS-only structural trace is unsupported rather than guessing an equivalent log boundary.
 8. Run `plura-desktop uninstall --profile 2` without `--yes` and review the exact dry-run targets. Confirm the official ChatGPT installation and default profile are not listed.

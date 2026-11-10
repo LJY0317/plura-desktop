@@ -92,23 +92,6 @@ class LinuxPlatform(DesktopPlatform):
             "ChatGPT executable not found. Pass --app PATH or set CHATGPT_EXECUTABLE."
         )
 
-    def resolve_codex_executable(self, chatgpt_executable: Path) -> Path:
-        # The official Linux package exposes /usr/bin/chatgpt as a symlink to
-        # /usr/lib/chatgpt/codex-launcher, while the bundled Codex executable lives at
-        # /usr/lib/chatgpt/resources/codex. Resolve relative to the real launcher so Plura
-        # stays coupled to the same official package instead of silently picking up an
-        # unrelated `codex` from PATH.
-        if os.environ.get("CODEX_EXECUTABLE"):
-            return super().resolve_codex_executable(chatgpt_executable)
-
-        resolved = chatgpt_executable.resolve()
-        package_root = self._official_package_root(resolved)
-        if package_root is None:
-            return super().resolve_codex_executable(chatgpt_executable)
-        bundled = package_root / "resources" / "codex"
-        if bundled.is_file() and os.access(bundled, os.X_OK):
-            return bundled.resolve()
-        raise RuntimeError("Bundled Codex executable is missing or not executable")
 
     def sanitized_environment(self, layout: ProfileLayout) -> dict[str, str]:
         env = super().sanitized_environment(layout)
@@ -139,7 +122,6 @@ class LinuxPlatform(DesktopPlatform):
                 "launch-target",
                 "--target",
                 layout.identifier,
-                "--renderer-cdp",
             )
         else:
             if not runtime_executable.is_file():
@@ -150,7 +132,6 @@ class LinuxPlatform(DesktopPlatform):
                 "launch-target",
                 "--target",
                 layout.identifier,
-                "--renderer-cdp",
             )
         layout.selector.parent.mkdir(parents=True, exist_ok=True)
         command = " ".join(
@@ -212,58 +193,3 @@ class LinuxPlatform(DesktopPlatform):
             if marker in command:
                 matches.append(int(child.name))
         return sorted(matches)
-
-    def launch(
-        self,
-        layout: ProfileLayout,
-        executable: Path,
-        *,
-        rust_log: str | None,
-        app_server_url: str | None = None,
-        renderer_cdp_port: int | None = None,
-    ) -> None:
-        env = self.sanitized_environment(layout)
-        if rust_log:
-            env["RUST_LOG"] = rust_log
-        if app_server_url:
-            spec = self.desktop_launch_spec(executable, layout=layout,
-                app_server_url=app_server_url, rust_log=rust_log,
-                renderer_cdp_port=renderer_cdp_port)
-            os.chdir(spec.cwd)
-            os.execve(spec.command[0], list(spec.command), spec.environment)
-            return
-        self.launch_subprocess(
-            executable,
-            layout,
-            env,
-            extra_args=tuple(self.renderer_cdp_args(renderer_cdp_port)),
-        )
-
-    def launch_default(
-        self,
-        executable: Path,
-        *,
-        app_server_url: str | None = None,
-        renderer_cdp_port: int | None = None,
-    ) -> None:
-        env = dict(os.environ)
-        env["HOME"] = str(self.home)
-        env["CODEX_HOME"] = str(self.default_codex_home())
-        env["CODEX_ELECTRON_USER_DATA_PATH"] = str(self.default_user_data())
-        if app_server_url:
-            spec = self.desktop_launch_spec(executable, layout=None,
-                app_server_url=app_server_url, rust_log=None,
-                renderer_cdp_port=renderer_cdp_port)
-            os.chdir(spec.cwd)
-            os.execve(spec.command[0], list(spec.command), spec.environment)
-            return
-        subprocess.Popen(
-            [str(executable), "--user-data-dir=" + str(self.default_user_data())]
-            + self.renderer_cdp_args(renderer_cdp_port),
-            env=env,
-            cwd=self.home,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )

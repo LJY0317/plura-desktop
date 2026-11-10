@@ -14,19 +14,9 @@ import tempfile
 from typing import Any
 
 from ..domain import ManagedPath, ProfileLayout, profile_identifier, validate_profile_index
-from ..routing import ResponsesRoute
-from ..engine import codex_engine_override
 
 
 STABLE_FROZEN_RUNTIME_ENV = "PLURA_DESKTOP_STABLE_RUNTIME"
-
-
-@dataclass(frozen=True)
-class AppServerLaunch:
-    """Ephemeral verified command; credentials stay off argv and representations."""
-
-    command: tuple[str, ...]
-    environment: dict[str, str] = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -73,17 +63,6 @@ class DesktopPlatform(ABC):
     def running(self, layout: ProfileLayout) -> list[int]:
         raise NotImplementedError
 
-    @abstractmethod
-    def launch(
-        self,
-        layout: ProfileLayout,
-        executable: Path,
-        *,
-        rust_log: str | None,
-        app_server_url: str | None = None,
-        renderer_cdp_port: int | None = None,
-    ) -> None:
-        raise NotImplementedError
 
     @abstractmethod
     def default_user_data(self) -> Path:
@@ -93,20 +72,10 @@ class DesktopPlatform(ABC):
     def running_default(self) -> list[int]:
         raise NotImplementedError
 
-    @abstractmethod
-    def launch_default(
-        self,
-        executable: Path,
-        *,
-        app_server_url: str | None = None,
-        renderer_cdp_port: int | None = None,
-    ) -> None:
-        raise NotImplementedError
 
     def desktop_launch_spec(
         self, executable: Path, *, layout: ProfileLayout | None,
-        app_server_url: str, rust_log: str | None = None,
-        renderer_cdp_port: int | None = None,
+        rust_log: str | None = None,
     ) -> DesktopLaunch:
         """Build a direct-exec command for an already verified executable."""
         if self.platform_id not in {"linux", "windows"}:
@@ -122,29 +91,24 @@ class DesktopPlatform(ABC):
             command = self.process_command(executable, layout)
         if rust_log:
             env["RUST_LOG"] = rust_log
-        env["CODEX_APP_SERVER_WS_URL"] = app_server_url
-        return DesktopLaunch(tuple(command + self.renderer_cdp_args(renderer_cdp_port)), env, self.home)
+        for key in ("CODEX_APP_SERVER_WS_URL", "CODEX_EXECUTABLE", "CODEX_EXECUTABLE_SHA256"):
+            env.pop(key, None)
+        return DesktopLaunch(tuple(command), env, self.home)
 
     def desktop_process_id(self, executable: Path, *, user_data: Path | None = None) -> int | None:
         """Return the top-level desktop process for one exact app executable when observable.
 
-        This is intentionally optional for platform adapters. It is used only to surface an already
-        running, non-canonical desktop instance for user-facing activation; it never grants runtime
-        ownership or converts that process into a canonical session.
+        This is optional for platform adapters and identifies an existing app for normal
+        activation or quit. An app PID does not prove Native tool readiness.
         """
         return None
 
-    def supervised_desktop_pid(
-        self, executable: Path, launcher: subprocess.Popen, *, deadline: float, user_data: Path | None = None
-    ) -> int:
-        """Bind a launched desktop's identity; direct-exec platforms retain the child PID."""
-        return launcher.pid
 
     def request_desktop_quit(self, executable: Path, desktop_pid: int) -> None:
         """Ask one exact desktop process to quit through the platform's normal application lifecycle.
 
-        Platforms must not implement this as an unconditional process kill. Callers use it as the
-        public normal-shutdown boundary before tearing down the owned app-server runtime.
+        Platforms must not implement this as an unconditional process kill. The official
+        app owns shutdown of its Native engine.
         """
         raise RuntimeError(f"Normal desktop quit is not supported on {self.platform_id}")
 
@@ -160,57 +124,6 @@ class DesktopPlatform(ABC):
     def default_codex_home(self) -> Path:
         return self.home / ".codex"
 
-    def resolve_codex_executable(self, chatgpt_executable: Path) -> Path:
-        override = codex_engine_override()
-        if override is not None:
-            return override[0]
-        for name in ("codex", "codex.exe"):
-            found = shutil.which(name)
-            if found:
-                return Path(found).resolve()
-        raise RuntimeError(
-            "Codex executable not found. Set CODEX_EXECUTABLE to the official bundled Codex executable."
-        )
-
-    def app_server_launch(
-        self,
-        codex_home: Path,
-        listen_url: str,
-        *,
-        chatgpt_executable: Path,
-        responses_route: ResponsesRoute | None = None,
-    ) -> AppServerLaunch:
-        # Resolve and verify in the owner immediately before its direct Popen; no
-        # intermediary interpreter, cached identity or second profile discovery.
-        codex = self.resolve_codex_executable(chatgpt_executable)
-        env = dict(os.environ)
-        env["CODEX_HOME"] = str(codex_home)
-        if responses_route is not None and not env.get(responses_route.env_key):
-            raise RuntimeError(
-                f"Responses route credential environment variable is missing: {responses_route.env_key}"
-            )
-        if responses_route is not None:
-            credential = env[responses_route.env_key]
-            inherited = env.get(responses_route.runtime_env_key)
-            if inherited and inherited != credential:
-                raise RuntimeError(
-                    f"Responses route cannot replace an existing {responses_route.runtime_env_key} value"
-                )
-            env[responses_route.runtime_env_key] = credential
-        command = [
-            str(codex),
-            "app-server",
-            "-c",
-            "features.code_mode_host=true",
-            "--analytics-default-enabled",
-            "-c",
-            "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
-            "--listen",
-            listen_url,
-        ]
-        if responses_route is not None:
-            command[2:2] = responses_route.codex_config_args()
-        return AppServerLaunch(tuple(command), env)
 
     def show_launch_error(self, layout: ProfileLayout, error: Exception) -> None:
         print(f"{layout.display_name} launch failed: {error}", file=os.sys.stderr)
@@ -501,33 +414,19 @@ class DesktopPlatform(ABC):
     def process_command(self, executable: Path, layout: ProfileLayout) -> list[str]:
         return [str(executable), "--user-data-dir=" + str(layout.user_data)]
 
-    @staticmethod
-    def renderer_cdp_args(port: int | None) -> list[str]:
-        if port is None:
-            return []
-        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-            raise ValueError("Renderer CDP port must be between 1 and 65535")
-        origin = f"http://127.0.0.1:{port}"
-        return [
-            "--remote-debugging-address=127.0.0.1",
-            f"--remote-debugging-port={port}",
-            f"--remote-allow-origins={origin}",
-        ]
 
-    def launch_subprocess(
-        self,
-        executable: Path,
-        layout: ProfileLayout,
-        env: dict[str, str],
-        *,
-        extra_args: tuple[str, ...] = (),
-    ) -> None:
-        subprocess.Popen(
-            self.process_command(executable, layout) + list(extra_args),
-            env=env,
-            cwd=self.home,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=(os.name != "nt"),
-        )
+    def launch(self, layout: ProfileLayout, executable: Path, *, rust_log: str | None) -> None:
+        self._launch_desktop(executable, layout=layout, rust_log=rust_log)
+
+    def launch_default(self, executable: Path) -> None:
+        self._launch_desktop(executable, layout=None)
+
+    def _launch_desktop(self, executable: Path, *, layout: ProfileLayout | None,
+                        rust_log: str | None = None) -> None:
+        spec = self.desktop_launch_spec(executable, layout=layout, rust_log=rust_log)
+        options = ({"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    | getattr(subprocess, "DETACHED_PROCESS", 0)}
+                   if self.platform_id == "windows" else {"start_new_session": True})
+        subprocess.Popen(spec.command, env=spec.environment, cwd=spec.cwd,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, **options)

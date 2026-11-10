@@ -138,20 +138,6 @@ class ProfileDiagnosticTests(unittest.TestCase):
             self.assertFalse(old.exists())
             self.assertEqual(14, len(list(incidents.iterdir())))
 
-    def test_byte_budget_is_shared_with_runtime_diagnostics(self):
-        import json
-        from plura_desktop.diagnostic_artifacts import write_runtime_diagnostic_artifact
-        from plura_desktop.runtime import descriptor_path
-        with tempfile.TemporaryDirectory() as root:
-            home = Path(root)
-            metadata = self._install_artifact_fixture(home)
-            descriptor = descriptor_path(metadata, "default")
-            descriptor.parent.mkdir(parents=True, exist_ok=True)
-            descriptor.write_text(json.dumps({"targetID":"default", "supervisorPID":123}))
-            write_runtime_diagnostic_artifact(metadata, "default", 123, {"padding":"x"*500})
-            module.write_diagnostic_artifact(home, 2, {"padding":"x"*500}, max_total_bytes=1024)
-            self.assertEqual([], list((metadata / "diagnostics/runtime").glob("*/incidents/*/summary.json")))
-            self.assertEqual(1, len(list(module.diagnostics_root(home,2).iterdir())))
 
     def test_diagnostic_artifact_size_cap_fails_before_creating_storage(self):
         with tempfile.TemporaryDirectory(prefix="profile-diagnostic-artifact-cap-", dir=ROOT) as root:

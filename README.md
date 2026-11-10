@@ -7,10 +7,10 @@
 The project now has a shared profile/domain lifecycle with platform adapters for **macOS, Windows, and Linux**. The official/default ChatGPT profile remains outside this project's ownership. Managed profiles start at Profile 2 and isolate `CODEX_HOME` plus the desktop user-data directory.
 
 For the distinction between **independent local profiles**, sequential account switching, mobile Remote continuity and the still-unavailable **simultaneous cross-account sharing of one original thread**, see [profile continuity and sharing boundaries](docs/PROFILE_CONTINUITY_AND_THREAD_SHARING.ko.md). A read-only macOS metadata-only storage separation audit is included at `scripts/diagnose_local_conversation_isolation.py`.
-Plura Desktop does not require Tela. Tela integration is optional: it can supply a
-caller-owned Web route or engine for a connected session. Disconnect that session before
-removing the integration; subsequent ordinary Plura launches use the official runtime.
-Tela removal does not own or remove Plura profiles, login data, or launchers.
+Plura Desktop launches isolated official Desktop apps; the official app owns Native execution
+and its tools. Plura does not start or proxy a Codex engine. Model providers belong in the
+official app's supported configuration. Companion integrations must support target contract v2;
+v1 routed app-server integrations are no longer supported. Profile data is preserved.
 
 `Plura Desktop` is the product name. ChatGPT and Codex describe the upstream products it integrates with rather than this project's brand identity.
 
@@ -21,7 +21,7 @@ Tela removal does not own or remove Plura profiles, login data, or launchers.
 
 ## Quick start
 
-**macOS on Apple Silicon is the fully signed-in real-app verified platform today.** The Intel standalone runtime is built and smoke-tested on GitHub's Intel macOS runner, but an Intel official-app E2E is still a separate verification gate. Windows shares the same core and CI coverage but still requires its real-app verification gate. For Linux, CI now downloads and installs OpenAI's current official [desktop preview](https://learn.chatgpt.com/docs/linux/linux-app), verifies the real packaged Desktop/bundled Codex layout, and reaches a canonical renderer-enabled Plura session under Xvfb. Signed-in login persistence and the full normal-quit/refresh/uninstall user flow remain a separate real-user verification gate.
+The new app-owned execution path has passed an isolated real-app startup/normal-quit probe on Apple Silicon macOS. Signed-in Native/browser acceptance and Intel, Windows and Linux real-app validation remain release gates. Earlier full E2E results apply to earlier releases.
 
 When GitHub Releases contains the suffix-free **`Plura-Desktop-VERSION-macOS.dmg`**, that notarized/stapled DMG is the recommended macOS install. Until then, **Homebrew is the simplest supported macOS install path** and does not require a separate Python environment. The source/package path remains available as the portable fallback. Do not treat `-unsigned.dmg` or `-signed.dmg` artifacts as the normal consumer installer.
 
@@ -198,21 +198,19 @@ brew uninstall plura-desktop
 
 - **`plura-desktop: command not found`** — run it from the isolated environment/package tool where you installed Plura Desktop, or fix that tool's normal PATH setup. In an activated venv, `python -m plura_desktop --version` is an equivalent fallback. Do not copy the console script by itself.
 - **`ChatGPT executable not found` on Windows/Linux** — pass the real executable with `--app PATH` or set `CHATGPT_EXECUTABLE`. Plura Desktop does not guess unknown install layouts.
-- **`restart-required`** — the target is already running outside the requested canonical capability/session. Quit that ChatGPT window normally once, then launch it again through Plura Desktop.
 - **Uninstall says the profile is running** — quit the managed ChatGPT profile normally and rerun the dry run. The uninstaller never kills it automatically.
 - **A path/identity/symlink safety error** — inspect the reported path instead of deleting it manually through Plura Desktop. Ambiguous destructive state intentionally fails closed.
 
 ## Architecture and ownership
 
-One invariant controls the lifecycle:
+The official Desktop owns Native execution, tools and engine lifetime. Plura owns profile
+identity, manifests, isolated state paths, selectors and install/refresh/uninstall operations.
+Platform adapters handle executable discovery, filesystem identity and normal OS app launch.
+All managed launch surfaces use `launch-target`; an existing running app is reused.
 
-> A logical managed profile has one authoritative runtime: one lifecycle-bound supervisor owns one official Desktop process and one loopback Codex app-server. Every managed launch surface converges on that runtime, so remote clients can attach later without asking the user to choose a separate "shared mode".
-
-The shared core owns profile identity, manifests, allowlisted paths, install/refresh/uninstall state, diagnostics settings, and the public target contract. Platform adapters own executable discovery, selector integration, process inspection, filesystem identity, environment construction, and launch/error behavior.
-
-This project is the independent source of truth for managed profile/runtime lifecycle. Downstream clients such as menu-bar controllers or mobile remote clients consume its public contracts; this repository must not depend on those clients or contain product-specific mobile/bridge policy.
-
-There is no watcher, idle polling daemon, login item, updater, or background sampler. A lightweight supervisor exists only for the lifetime of an actively launched managed profile and exits with its Desktop/app-server pair.
+Plura starts no separate Native engine, model-routing proxy, supervisor or background watcher.
+The original app remains unchanged. Managed macOS runtime clones are disposable, signed copies;
+login and conversation data remain in their isolated profile directories.
 
 ## Product principles
 
@@ -255,10 +253,10 @@ There is currently no Plura Desktop background cache, telemetry store, or rollin
 
 ## Platform support and verification
 
-- **macOS Apple Silicon:** official-app E2E verified. The official `/Applications/ChatGPT.app` remains read-only and is the sole application-update authority. Managed profiles launch from a byte-identical, still-validly-signed APFS copy-on-write runtime clone under the launcher metadata directory; the clone is disposable derived code, not profile state, and is reconciled to the official app on the next cold launch after an official update or managed-clone mutation.
+- **macOS Apple Silicon:** previous releases completed signed-in official-app E2E. The new app-owned launch has passed an isolated real-app startup/normal-quit probe; signed-in Native/browser acceptance is still pending. The official `/Applications/ChatGPT.app` remains read-only and is the sole application-update authority. Managed profiles launch from a byte-identical, still-validly-signed APFS copy-on-write runtime clone under the launcher metadata directory; the clone is disposable derived code, not profile state, and is reconciled to the official app on the next cold launch after an official update or managed-clone mutation.
 - **macOS Intel:** the standalone runtime is built and smoke-tested on a native Intel GitHub runner, but the current official ChatGPT app has not completed this repository's full Intel real-app verification flow yet.
 - **Windows:** lifecycle, path layout, selector generation, sanitized environment, and process-ownership adapter are covered by CI. A real official-app launch has not yet been verified on a Windows machine in this repository.
-- **Linux:** the current official OpenAI Ubuntu/Debian preview package is continuously exercised on Ubuntu 24.04 CI. Plura resolves the documented `chatgpt` wrapper to the real packaged `ChatGPT` executable, uses the sibling bundled Codex app-server, preserves a narrow X11/Wayland/D-Bus session environment, installs an isolated Profile 2, and launches the generated selector to a canonical renderer-enabled ready session under Xvfb. This proves the current package/launch integration boundary, but it does **not** yet prove interactive sign-in persistence, independent default-profile use, normal product-driven quit, or the full real-user refresh/uninstall flow.
+- **Linux:** shared lifecycle and isolated launch construction are covered by fixtures. The Xvfb workflow has been updated for app-owned execution; its current real-package run and the full signed-in lifecycle remain release gates.
 
 Windows still requires real-machine official-app evidence before its platform-specific launch assumptions are treated as proven. Linux now has official-package launch smoke evidence in addition to the shared CI contract, but remains short of the full signed-in real-user verification flow. The common core does not add fallback behavior when an executable or process contract is unknown.
 
@@ -300,70 +298,34 @@ The first managed launch starts with empty isolated state. Do not copy authentic
 
 For a first managed profile, the intended lifecycle is: run `status --profile 2` (expect `not-installed`), run `install --profile 2`, run `launch --profile 2`, sign in normally in the new ChatGPT Profile 2 window, quit it normally once, then use `status`, diagnostics as needed, `refresh` after package updates, and `uninstall` first as a dry run before applying `--yes`. No step requires copying an existing ChatGPT/Codex profile database.
 
-Managed profiles stay open when their launcher shell disconnects. Each profile supervisor owns its Desktop and app-server separately, and an explicit supervisor termination cleans up both. Normal profile quit continues to follow the Desktop lifecycle.
+Managed profiles stay open when their launcher shell disconnects. Quit the official Desktop normally; it owns and closes its Native engine.
 
-### Stable target contract
-
-External tools should use the installed control CLI and versioned target contract instead of reconstructing selector paths, `CODEX_HOME`, ports, or profile numbering rules. On macOS/Linux the control CLI lives in the platform metadata directory as `plura-desktop`; Windows installs `plura-desktop.cmd` there.
+### Target contract v2
 
 ```sh
 plura-desktop targets --json
+plura-desktop launch-target --target local.plura-desktop.profile2 --json
+plura-desktop target-session --target local.plura-desktop.profile2 --json
+plura-desktop quit-target --target local.plura-desktop.profile2 --expected-desktop-pid PID --json
 ```
 
-Contract version 1 exposes target identity, display name, lifecycle state, ownership, backend policy, and canonical session state. It intentionally does **not** expose private profile paths.
+`targets` returns `contractVersion: 2`, platform and targets. Each target includes its ID,
+display name, managed/default role, `backendPolicy: "official-desktop-owned"` and observed
+`state` (`running`, `stopped`, `invalid` or `not-installed`). Private profile paths and
+credentials are not part of the contract.
 
-The same target contract also exposes renderer capability independently from app-server readiness. `rendererCDPSupported` describes whether a target can be launched with the loopback renderer contract, while `rendererCDPState` is `available`, `ready`, `restart-required`, `unsupported`, or `unavailable`. This prevents companion clients from assuming that a `ready` app-server session is automatically renderer-capable: renderer CDP is a launch-time capability, so an already-running canonical session without it must be quit normally once before a renderer-enabled relaunch.
+`launch-target` reuses a running app or returns `launch-requested` after the OS accepts the
+launch request. This does not claim account sign-in, Native tools or Web models are ready.
+`target-session` reports the current app state and, where the platform can establish it,
+`desktopProcessID`. On macOS `quit-target` requests normal quit for that exact app; unsupported
+platforms report the limitation rather than killing it. It never stops a separate engine.
 
-Controllers should launch a discovered target by ID rather than reconstructing a selector or profile index:
-
-```sh
-plura-desktop launch-target --target local.plura-desktop.profile2
-```
-
-`launch-target` is the canonical managed-profile launch path. The installed selector (`ChatGPT Profile N`), the menu-bar integration, and future controllers should all use it. Starting a stopped target creates one lifecycle-bound app-server + Desktop pair; calling it again reuses the live canonical session. If an older/private Desktop instance is already running outside the canonical runtime, the command fails closed and asks for one normal quit rather than creating a second writer.
-
-Cold Desktop launches can take materially longer when renderer CDP is requested. The canonical caller therefore waits up to 30 seconds for the single owned supervisor to publish its ready session; it does not start a second runtime when startup is merely slow.
-
-Controllers that need a temporary local Responses provider can request one at launch without learning or rewriting the target's private `CODEX_HOME`:
-
-```sh
-CHATGPT_TELA_RUNTIME_TOKEN=... plura-desktop launch-target \
-  --target local.plura-desktop.profile2 \
-  --responses-base-url http://127.0.0.1:18741/v1 \
-  --responses-env-key CHATGPT_TELA_RUNTIME_TOKEN \
-  --json
-```
-
-The Responses route is launch-time only. The URL must be loopback HTTP with a `/v1` path, and the credential value is inherited from the named environment variable rather than written to argv, manifests, or the target contract. Credentials must be high-entropy values of at least 32 characters. Plura carries that credential through the built-in `OpenAI-Organization` request header; the local Responses server must authenticate that header and strip it before forwarding Native requests upstream. A preexisting `OPENAI_ORGANIZATION` value makes the routed launch fail rather than replacing the user's organization. The public route fingerprint binds the loopback URL, env-key name, provider identity, and a one-way hash of that credential; it never exposes the credential itself. A live target can therefore be reused only when endpoint, key, and credential all still match. Changing any of them requires one normal quit. Ordinary launches that do not request a route remain unchanged.
-
-When a Responses route is active, the supervisor keeps the Codex app-server on a private loopback endpoint and publishes a second loopback WebSocket endpoint for Desktop/controllers. The route retains Codex's built-in `openai` provider identity, so conversations remain resumable in an ordinary Desktop session after the route is removed. ChatGPT Desktop may reload user config after attaching to the app-server; the published endpoint therefore overlays the secret-free `openai_base_url` and built-in provider selection only on `thread/start`, `thread/resume`, and `thread/fork`. All other app-server traffic is forwarded unchanged. The user `config.toml` is never rewritten, the official ChatGPT application is never modified, and the credential value stays only in the owned backend process environment.
-
-With `--json`, `launch-target` returns the same public ready-session shape as `target-session --json`. Controllers can therefore obtain the canonical loopback app-server endpoint and route fingerprint without reading launcher metadata or private profile paths.
-
-An integration that adds its own model rows can supply `--model-list-overlay-url` and `--model-list-overlay-env-key` together with a Responses route. Plura sends only matched `model/list` results to that exact loopback HTTP callback, using a bearer token inherited from the named environment variable. The callback must return `{ "contractVersion": 1, "result": ... }`; if it fails, Plura returns the original Native model list. `modelListOverlaySupported` advertises this optional target capability, and `modelListOverlayFingerprint` identifies the active callback in `target-session --json`. `--responses-runtime-header-name` accepts only `OpenAI-Organization`, the built-in provider's credential carrier.
-
-Controllers that need to inspect the official Desktop renderer can opt in to a Chromium DevTools endpoint at launch:
-
-```sh
-plura-desktop launch-target \
-  --target local.plura-desktop.profile2 \
-  --renderer-cdp \
-  --json
-```
-
-The generic `launch-target` contract keeps this capability **off by default** unless `--renderer-cdp` is requested. On macOS, the installed `ChatGPT Profile N` selector requests it explicitly so local read-only companion clients can attach to the renderer without depending on Accessibility UI timing. The canonical supervisor allocates an ephemeral loopback port and starts Desktop with Chromium remote debugging bound to `127.0.0.1` only; the allowed WebSocket origin is the exact loopback endpoint rather than `*`. The ready-session contract then adds `rendererCDPEndpoint` (for example `http://127.0.0.1:49152`). No profile path, credential, cookie, or debugging token is added to the public contract. Requesting renderer CDP for an already-running canonical session that was launched without it fails closed and requires one normal Desktop quit before relaunch.
-
-Renderer state is deliberately separate from the target's main session state. A client that only needs Work/Codex can continue using a rendererless `ready` session; a client that needs the Desktop semantic renderer can inspect `rendererCDPState` and explain the one-time normal relaunch instead of silently falling back to a slower UI automation path.
-
-Integrations that need to attach to the live runtime can request the current loopback endpoint explicitly:
-
-```sh
-plura-desktop target-session --target TARGET_ID --json
-```
-
-The endpoint is dynamic and local-only. Plura Desktop owns its lifetime; remote/bridge projects attach to it and never create their own fallback app-server.
-
-When a launch-time Responses route is active, `target-session --json` adds only `responsesRouteFingerprint`. When renderer CDP was explicitly enabled at launch, it adds only the loopback `rendererCDPEndpoint`. It does not expose the route URL, environment-variable name/value, `CODEX_HOME`, Desktop user-data path, authentication state, or profile data paths. If a Desktop target is already running outside the canonical runtime, `state` remains `restart-required`, but platforms that can prove the exact top-level Desktop process may also expose `desktopProcessID` so a controller can foreground that existing app without claiming runtime ownership.
+**Breaking change from v1:** no loopback app-server endpoint, engine override, Responses
+routing, model-list callback, startup-catalog overlay or renderer CDP is supplied. Removed
+flags fail explicitly. Consumers must adopt v2 before this release is installed. Configure
+optional model providers through the official app's supported settings; Plura does not rewrite
+provider settings or account data. Quit profiles launched by an older Plura normally before
+the first launch with this version. Refresh selectors after updating Plura.
 
 ### Refresh
 

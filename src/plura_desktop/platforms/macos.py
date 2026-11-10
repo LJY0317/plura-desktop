@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import uuid
 
 from ..domain import ProfileLayout
@@ -533,7 +532,7 @@ class MacOSPlatform(DesktopPlatform):
             shutil.copy2(icon, resources / "icon.icns")
             if runtime_executable is None:
                 command = f'{shlex.quote(sys.executable)} "$(dirname "$0")/../Resources/plura_desktop_cli.py"'
-                launch = f'exec {command} launch-target --target {layout.identifier} --renderer-cdp'
+                launch = f'exec {command} launch-target --target {layout.identifier}'
             else:
                 if not runtime_executable.is_file():
                     raise RuntimeError(f"Standalone Plura runtime executable is missing: {runtime_executable}")
@@ -541,7 +540,7 @@ class MacOSPlatform(DesktopPlatform):
                 stable = shlex.quote(str(runtime_executable))
                 launch = (
                     f'{STABLE_FROZEN_RUNTIME_ENV}={stable} exec {command} '
-                    f'launch-target --target {layout.identifier} --renderer-cdp'
+                    f'launch-target --target {layout.identifier}'
                 )
             launcher = (
                 "#!/bin/sh\n"
@@ -704,23 +703,10 @@ class MacOSPlatform(DesktopPlatform):
             ))
         return command
 
-    def supervised_desktop_pid(
-        self, executable: Path, launcher: subprocess.Popen, *, deadline: float, user_data: Path | None = None
-    ) -> int:
-        # LaunchServices owns the app process; open -W is only its lifecycle waiter.
-        while time.monotonic() < deadline:
-            if launcher.poll() is not None:
-                raise RuntimeError("macOS application launcher exited before Desktop started")
-            pid = self.desktop_process_id(executable, user_data=user_data)
-            if pid is not None:
-                return pid
-            time.sleep(0.05)
-        raise RuntimeError("macOS Desktop process identity was not established before startup deadline")
 
     def desktop_launch_spec(
         self, executable: Path, *, layout: ProfileLayout | None,
-        app_server_url: str | None, rust_log: str | None = None,
-        renderer_cdp_port: int | None = None,
+        rust_log: str | None = None,
     ) -> DesktopLaunch:
         if layout is None:
             username = self._current_username()
@@ -736,61 +722,17 @@ class MacOSPlatform(DesktopPlatform):
             args = self.process_command(executable, layout)[1:]
         if rust_log:
             env["RUST_LOG"] = rust_log
-        if app_server_url:
-            env["CODEX_APP_SERVER_WS_URL"] = app_server_url
         # LaunchServices does not inherit the environment of its open client.
         # Forward only the profile/transport settings from the canonical spec;
         # inherited credentials and other environment values stay off argv.
-        forwarded_keys = ("CODEX_HOME", "CODEX_ELECTRON_USER_DATA_PATH", "CODEX_APP_SERVER_WS_URL", "RUST_LOG")
+        forwarded_keys = ("CODEX_HOME", "CODEX_ELECTRON_USER_DATA_PATH", "RUST_LOG")
         application_environment = [argument for key in forwarded_keys if key in env
                                    for argument in ("--env", f"{key}={env[key]}")]
         command = ["/usr/bin/open", "-W", "-n", *application_environment,
                    "-a", str(self._bundle_for_executable(executable)),
-                   "--args", *args, *self.renderer_cdp_args(renderer_cdp_port)]
+                   "--args", *args]
         return DesktopLaunch(tuple(command), env, self.home)
 
-    def launch(self, layout: ProfileLayout, executable: Path, *, rust_log: str | None,
-               app_server_url: str | None = None, renderer_cdp_port: int | None = None) -> None:
-        spec = self.desktop_launch_spec(executable, layout=layout, rust_log=rust_log,
-                                       app_server_url=app_server_url, renderer_cdp_port=renderer_cdp_port)
-        os.chdir(spec.cwd)
-        os.execve(spec.command[0], list(spec.command), spec.environment)
-
-    def launch_default(self, executable: Path, *, app_server_url: str | None = None,
-                       renderer_cdp_port: int | None = None) -> None:
-        spec = self.desktop_launch_spec(executable, layout=None, app_server_url=app_server_url,
-                                       renderer_cdp_port=renderer_cdp_port)
-        os.chdir(spec.cwd)
-        os.execve(spec.command[0], list(spec.command), spec.environment)
-
-    def resolve_codex_executable(self, chatgpt_executable: Path) -> Path:
-        if os.environ.get("CODEX_EXECUTABLE") or os.environ.get("CODEX_EXECUTABLE_SHA256"):
-            return super().resolve_codex_executable(chatgpt_executable)
-        resources = chatgpt_executable.parents[1] / "Resources"
-        legacy = resources / "codex"
-        if legacy.is_file() and os.access(legacy, os.X_OK):
-            return legacy
-
-        package_root = resources / "codex-cli"
-        package_manifest = package_root / "codex-package.json"
-        if package_manifest.is_file():
-            try:
-                package = json.loads(package_manifest.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as error:
-                raise RuntimeError("Bundled Codex package manifest is unreadable") from error
-            entrypoint = package.get("entrypoint")
-            if not isinstance(entrypoint, str) or not entrypoint or Path(entrypoint).is_absolute():
-                raise RuntimeError("Bundled Codex package manifest has an invalid entrypoint")
-            root = package_root.resolve()
-            candidate = (package_root / entrypoint).resolve()
-            try:
-                candidate.relative_to(root)
-            except ValueError as error:
-                raise RuntimeError("Bundled Codex package entrypoint escapes its package root") from error
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                return candidate
-            raise RuntimeError("Bundled Codex package entrypoint is missing or not executable")
-        return super().resolve_codex_executable(chatgpt_executable)
 
     def show_launch_error(self, layout: ProfileLayout, error: Exception) -> None:
         detail = " ".join(str(error).split())[:240]

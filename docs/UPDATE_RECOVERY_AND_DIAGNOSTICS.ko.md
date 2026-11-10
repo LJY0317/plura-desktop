@@ -63,16 +63,8 @@ plura-desktop diagnostics-status --profile 2
 단계는 `update_lock`, `manifest_validation`,
 `official_source_validation`, `runtime_prepare`,
 `selector_staging`, `control_runtime_prepare`,
-`manifest_commit`, `runtime_spawn`,
-`runtime_session_wait` 등 내부 허용값으로 제한한다.
-
-원본 앱 업데이트를 따르는 준비 단계뿐 아니라 canonical
-`launch_runtime`과 `launch_supervisor` 실패도 분리한다.
-감독 과정에서는 `supervisor_managed_prepare`,
-`supervisor_backend_spawn`, `supervisor_backend_ready`,
-`supervisor_proxy_ready`, `supervisor_gui_spawn`,
-`supervisor_gui_identity`, `supervisor_renderer_ready`,
-`supervisor_session_commit` 등의 단계 이름만 보관한다.
+`manifest_commit`, `desktop_spawn` 등으로 제한합니다. 앱 실행 요청 실패는
+`launch_desktop`으로 구분합니다. 별도 엔진·중계·supervisor 진단 경로는 제거했습니다.
 LaunchServices는 대기용 `open(1)` PID와 실제 GUI PID가
 다르므로, 원본 앱을 정상 종료할 때에는 **확인된 GUI PID와
 실행 파일의 정규 경로가 모두 일치할 때만** AppKit에 정상 종료를

@@ -50,7 +50,6 @@ jobs:
           dpkg-deb --extract "$RUNNER_TEMP/chatgpt.deb" "$root"
           test -x "$root/usr/lib/chatgpt/ChatGPT"
           test -x "$root/usr/lib/chatgpt/codex-launcher"
-          test -x "$root/usr/lib/chatgpt/resources/codex"
           PATH="$root/usr/bin:$PATH" PLURA_OFFICIAL_ROOT="$root" PYTHONPATH=src python - <<'PY'
           import os
           from pathlib import Path
@@ -60,17 +59,11 @@ jobs:
           root = Path(os.environ["PLURA_OFFICIAL_ROOT"]).resolve()
           platform = LinuxPlatform(home=root / "home")
           desktop = platform.resolve_executable()
-          codex = platform.resolve_codex_executable(desktop)
           expected_desktop = (root / "usr/lib/chatgpt/ChatGPT").resolve()
-          expected_codex = (root / "usr/lib/chatgpt/resources/codex").resolve()
           if desktop != expected_desktop:
               raise SystemExit(f"unexpected ChatGPT executable: {desktop}")
-          if codex != expected_codex:
-              raise SystemExit(f"unexpected bundled Codex executable: {codex}")
           print(f"desktop={desktop}")
-          print(f"codex={codex}")
           PY
-          "$root/usr/lib/chatgpt/resources/codex" --version
 
       - name: Install official package and test managed lifecycle boundary
         shell: bash
@@ -109,41 +102,6 @@ jobs:
               raise SystemExit(f"manifest did not record real official executable: {value.get('app_executable')}")
           PY
 
-          port="$(python - <<'PY'
-          import socket
-          with socket.socket() as sock:
-              sock.bind(("127.0.0.1", 0))
-              print(sock.getsockname()[1])
-          PY
-          )"
-          "$plura" _serve-target \
-            --target local.plura-desktop.profile2 \
-            --listen "ws://127.0.0.1:$port" \
-            >"$RUNNER_TEMP/plura-app-server.log" 2>&1 &
-          app_server_pid=$!
-          cleanup_app_server() {
-            kill "$app_server_pid" >/dev/null 2>&1 || true
-            wait "$app_server_pid" >/dev/null 2>&1 || true
-          }
-          trap cleanup_app_server EXIT
-          python - "$port" <<'PY'
-          import socket
-          import sys
-          import time
-
-          port = int(sys.argv[1])
-          for _ in range(100):
-              try:
-                  with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                      print("official bundled app-server: ready")
-                      raise SystemExit(0)
-              except OSError:
-                  time.sleep(0.1)
-          raise SystemExit("official bundled app-server did not listen")
-          PY
-          cleanup_app_server
-          trap - EXIT
-
           "$plura" uninstall --profile 2
           "$plura" uninstall --profile 2 --yes
 
@@ -172,7 +130,7 @@ jobs:
 
           launcher="$XDG_STATE_HOME/PluraDesktop/profile-2-runtime/launch-profile"
           test -x "$launcher"
-          grep -F 'launch-target --target local.plura-desktop.profile2 --renderer-cdp' "$launcher"
+          grep -F 'launch-target --target local.plura-desktop.profile2' "$launcher"
 
           output="$RUNNER_TEMP/launch-session.json"
           export PLURA_SELECTOR_LAUNCHER="$launcher"
@@ -182,9 +140,13 @@ jobs:
             set -euo pipefail
             export DISPLAY=:99
             "$PLURA_SELECTOR_LAUNCHER"
-            "$PLURA_CONTROL_CLI" target-session \
-              --target local.plura-desktop.profile2 \
-              --json >"$PLURA_SESSION_OUTPUT"
+            for attempt in $(seq 1 50); do
+              "$PLURA_CONTROL_CLI" target-session \
+                --target local.plura-desktop.profile2 \
+                --json >"$PLURA_SESSION_OUTPUT"
+              grep -q running "$PLURA_SESSION_OUTPUT" && break
+              sleep 0.2
+            done
           '
           cat "$output"
           python - "$output" <<'PY'
@@ -193,10 +155,10 @@ jobs:
           from pathlib import Path
 
           value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          if value.get("state") != "ready":
-              raise SystemExit(f"selector canonical session not ready: {value}")
-          if value.get("rendererCDPState") != "ready":
-              raise SystemExit(f"selector renderer CDP not ready: {value}")
+          if value.get("contractVersion") != 2 or value.get("state") != "running":
+              raise SystemExit(f"official Desktop not running: {value}")
+          if value.get("backendPolicy") != "official-desktop-owned" or "endpoint" in value:
+              raise SystemExit(f"unexpected Native ownership: {value}")
           PY
           cleanup
           trap - EXIT

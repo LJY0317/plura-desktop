@@ -9,18 +9,17 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import io
 import json
-import os
 from pathlib import Path
 import plistlib
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from plura_desktop.manager import Profile, launch_target, supervise_target
+from plura_desktop.manager import Profile, launch_target
 from plura_desktop.diagnostic_artifacts import write_diagnostic_artifact
 from plura_desktop.platforms.macos import MacOSPlatform
 from test_safety import FakePlatform
@@ -108,7 +107,7 @@ class FakeProfileUpdateReceipts(unittest.TestCase):
 
     def test_launch_child_failure_is_recorded_and_not_concealed(self) -> None:
         with patch(
-            "plura_desktop.manager._start_detached",
+            "test_safety.FakePlatform.launch",
             side_effect=OSError("PRIVATE_OWNED_SOCKET_PATH"),
         ):
             with self.assertRaisesRegex(OSError, "PRIVATE_OWNED_SOCKET_PATH"):
@@ -116,32 +115,10 @@ class FakeProfileUpdateReceipts(unittest.TestCase):
         records = _incident_payloads(self.profile.meta)
         self.assertEqual(1, len(records))
         item = records[0]["updateLifecycle"]
-        self.assertEqual("launch_runtime", item["operation"])
-        self.assertEqual("runtime_spawn", item["failedPhase"])
+        self.assertEqual("launch_desktop", item["operation"])
+        self.assertEqual("desktop_spawn", item["failedPhase"])
         self.assertNotIn("PRIVATE_OWNED_SOCKET_PATH", json.dumps(records))
 
-    def test_canonical_supervisor_gui_identity_failure_is_safe_and_classified(self) -> None:
-        """Never log backend args, account state or private errors on spawn failure."""
-        backend = Mock(pid=301)
-        backend.poll.return_value = None
-        desktop = Mock(pid=302)
-        desktop.poll.return_value = None
-        private_error = "SECRET_PRIVATE_APP_SERVER_CREDENTIAL_MUST_NOT_APPEAR"
-        with patch("plura_desktop.manager.subprocess.Popen", side_effect=[backend, desktop]), patch(
-            "plura_desktop.manager.endpoint_ready", return_value=True,
-        ), patch.object(
-            self.platform, "supervised_desktop_pid", side_effect=RuntimeError(private_error),
-        ), patch("plura_desktop.manager._terminate_owned"):
-            with self.assertRaisesRegex(RuntimeError, private_error):
-                supervise_target(self.platform, self.profile.identifier)
-        records = _incident_payloads(self.profile.meta)
-        self.assertEqual(1, len(records))
-        item = records[0]["updateLifecycle"]
-        self.assertEqual("launch_supervisor", item["operation"])
-        self.assertEqual("supervisor_gui_identity", item["failedPhase"])
-        self.assertEqual("RuntimeError", item["errorClass"])
-        self.assertNotIn(private_error, json.dumps(records))
-        self.assertNotIn(str(self.home), json.dumps(records))
 
     def test_control_runtime_failure_has_distinct_phase_and_never_leaks_message(self) -> None:
         with patch.object(self.platform, "write_control_cli", side_effect=OSError("private control path")):

@@ -8,9 +8,7 @@ import os
 from pathlib import Path
 import plistlib
 import tempfile
-import signal
 import subprocess
-import time
 import unittest
 from unittest.mock import patch
 from contextlib import redirect_stdout
@@ -23,38 +21,11 @@ import sys
 sys.path.insert(0, str(SRC))
 
 from plura_desktop.domain import MANIFEST_SCHEMA
-from plura_desktop.manager import (
-    NORMAL_QUIT_TIMEOUT_SECONDS,
-    Profile,
-    SESSION_START_TIMEOUT_SECONDS,
-    STABLE_FROZEN_RUNTIME_ENV,
-    SUPERVISOR_STARTUP_TIMEOUT_SECONDS,
-    _frozen_runtime_executable,
-    _private_command,
-    _python_runtime_command_prefix,
-    _supervise_target,
-    _wait_for_session,
-    _target,
-    launch_target,
-    public_targets,
-    quit_target,
-    supervise_target,
-    target_session,
-)
-from plura_desktop.runtime import (
-    TargetSession,
-    acquire_runtime_claim,
-    atomic_write_session,
-    descriptor_path,
-    release_runtime_claim,
-    valid_renderer_cdp_endpoint,
-)
-from plura_desktop.version import __version__
+from plura_desktop.manager import Profile, STABLE_FROZEN_RUNTIME_ENV, _frozen_runtime_executable, _target, launch_target, public_targets, quit_target, target_session
 from plura_desktop.platforms.base import DesktopPlatform
 from plura_desktop.platforms.linux import LinuxPlatform
 from plura_desktop.platforms.macos import MacOSPlatform
 from plura_desktop.platforms.windows import WindowsPlatform
-from plura_desktop.routing import ResponsesRoute
 from plura_desktop.cli import main as cli_main
 
 
@@ -67,8 +38,6 @@ class FakePlatform(DesktopPlatform):
         self.default_running_pids: list[int] = []
         self.launched = False
         self.default_launched = False
-        self.last_app_server_url: str | None = None
-        self.last_renderer_cdp_port: int | None = None
         self.desktop_process_ids: dict[str, int] = {}
         self.quit_requests: list[tuple[str, int]] = []
 
@@ -95,8 +64,6 @@ class FakePlatform(DesktopPlatform):
             raise RuntimeError("fixture app missing")
         return candidate
 
-    def resolve_codex_executable(self, chatgpt_executable):
-        return chatgpt_executable
 
     def tool_lifecycle_diagnostic_rust_log(self):
         return "info,test_structural_target=trace"
@@ -121,29 +88,11 @@ class FakePlatform(DesktopPlatform):
     def running_default(self):
         return list(self.default_running_pids)
 
-    def launch(
-        self,
-        layout,
-        executable,
-        *,
-        rust_log,
-        app_server_url=None,
-        renderer_cdp_port=None,
-    ):
+    def launch(self, layout, executable, *, rust_log):
         self.launched = True
-        self.last_app_server_url = app_server_url
-        self.last_renderer_cdp_port = renderer_cdp_port
 
-    def launch_default(self, executable, *, app_server_url=None, renderer_cdp_port=None):
+    def launch_default(self, executable):
         self.default_launched = True
-        self.last_app_server_url = app_server_url
-        self.last_renderer_cdp_port = renderer_cdp_port
-
-    def desktop_launch_spec(self, executable, *, layout, app_server_url,
-                            rust_log=None, renderer_cdp_port=None):
-        from plura_desktop.platforms.base import DesktopLaunch
-        return DesktopLaunch((str(executable), "--app-server-url", app_server_url),
-            {**os.environ, "CODEX_ELECTRON_USER_DATA_PATH": str(layout.user_data if layout else self.default_user_data())}, self.home)
 
     def desktop_process_id(self, executable, *, user_data=None):
         return self.desktop_process_ids.get(str(executable))
@@ -157,14 +106,6 @@ class FakePlatform(DesktopPlatform):
 
 
 class SafetyTests(unittest.TestCase):
-    def test_session_wait_budget_exceeds_supervisor_startup_budget(self):
-        self.assertEqual(SUPERVISOR_STARTUP_TIMEOUT_SECONDS, 30.0)
-        self.assertGreater(SESSION_START_TIMEOUT_SECONDS, SUPERVISOR_STARTUP_TIMEOUT_SECONDS)
-        # Normal macOS application termination can legitimately take longer than the
-        # startup probe budget while Desktop drains its own lifecycle. Keep this
-        # bounded but comfortably above the measured ~20s range; never turn it into
-        # a force-kill fallback.
-        self.assertEqual(NORMAL_QUIT_TIMEOUT_SECONDS, 60.0)
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="plura-desktop-test-", dir=ROOT)
@@ -234,22 +175,6 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual((runtime / "plura_desktop/__init__.py").read_text(encoding="utf-8"), "VALUE = 'old'\n")
         self.assertEqual(list(metadata.glob(".control-runtime-*-*")), [])
 
-    def test_standalone_runtime_uses_direct_executable_for_selector_control_and_private_children(self):
-        standalone = self.home / "plura-desktop-standalone"
-        standalone.write_text("standalone\n", encoding="utf-8")
-        standalone.chmod(0o700)
-        with patch("plura_desktop.manager._frozen_runtime_executable", return_value=standalone):
-            self.profile.install()
-            selector = (self.profile.wrapper / "launcher.txt").read_text(encoding="utf-8")
-            self.assertIn(f"runtime={standalone}", selector)
-            helper = self.profile.meta / "plura-desktop"
-            helper_text = helper.read_text(encoding="utf-8")
-            self.assertIn(str(standalone), helper_text)
-            self.assertIn(STABLE_FROZEN_RUNTIME_ENV, helper_text)
-            self.assertFalse((self.profile.meta / "control-runtime").exists())
-            command = _private_command(self.platform, "_supervise-target", self.profile.identifier)
-            self.assertEqual(command[:3], [str(standalone), "_supervise-target", "--target"])
-            self.profile.uninstall(True)
 
     def test_frozen_runtime_accepts_validated_stable_absolute_path(self):
         standalone = self.home / "plura-desktop-standalone"
@@ -321,27 +246,6 @@ class SafetyTests(unittest.TestCase):
         ):
             _frozen_runtime_executable()
 
-    def test_private_child_command_uses_import_safe_copied_control_launcher(self):
-        runtime = self.home / "control-runtime"
-        package = runtime / "plura_desktop"
-        package.mkdir(parents=True)
-        copied_launcher = runtime / "plura_desktop_cli.py"
-        copied_launcher.write_text("print('launcher')\n", encoding="utf-8")
-        with patch("plura_desktop.manager.PACKAGE_DIR", package):
-            prefix = _python_runtime_command_prefix()
-            command = _private_command(self.platform, "_supervise-target", self.profile.identifier)
-        self.assertEqual(prefix, [sys.executable, str(copied_launcher)])
-        self.assertEqual(
-            command[:4],
-            [sys.executable, str(copied_launcher), "_supervise-target", "--target"],
-        )
-
-    def test_private_child_command_falls_back_to_installed_module_entrypoint(self):
-        package = self.home / "site-packages/plura_desktop"
-        package.mkdir(parents=True)
-        with patch("plura_desktop.manager.PACKAGE_DIR", package):
-            prefix = _python_runtime_command_prefix()
-        self.assertEqual(prefix, [sys.executable, "-m", "plura_desktop"])
 
     def test_existing_state_is_never_adopted(self):
         self.profile.codex.mkdir()
@@ -398,31 +302,6 @@ class SafetyTests(unittest.TestCase):
         for path, before in identities.items():
             self.assertEqual(self.platform.identity(path), before)
 
-    def test_cold_launch_follows_updated_official_app_without_replacing_profile_state(self):
-        self.profile.install()
-        identities = {entry.role: self.platform.identity(entry.path) for entry in self.profile.layout.managed}
-        (self.profile.codex / "conversation-sentinel").write_text("keep", encoding="utf-8")
-        (self.profile.data / "login-sentinel").write_text("keep", encoding="utf-8")
-        self.app.write_bytes(b"updated official fixture")
-
-        session = TargetSession(self.profile.identifier, "ws://127.0.0.1:18762", 11, 12, 13)
-        # The claim-owning canonical supervisor, not the public launch CLI,
-        # performs the only cold derived-runtime refresh.
-        self.profile.prepare_launch()
-        with patch("plura_desktop.manager._start_detached") as start, patch(
-            "plura_desktop.manager._wait_for_session", return_value=session
-        ):
-            result = launch_target(self.platform, self.profile.identifier)
-
-        self.assertEqual(result, session)
-        self.assertEqual(self.profile.load()["official_baseline"], self.platform.fingerprint(self.app))
-        self.assertEqual(
-            identities,
-            {entry.role: self.platform.identity(entry.path) for entry in self.profile.layout.managed},
-        )
-        self.assertEqual((self.profile.codex / "conversation-sentinel").read_text(), "keep")
-        self.assertEqual((self.profile.data / "login-sentinel").read_text(), "keep")
-        start.assert_called_once()
 
     def test_updated_official_app_never_refreshes_a_running_managed_profile(self):
         self.profile.install()
@@ -457,23 +336,6 @@ class SafetyTests(unittest.TestCase):
         self.assertFalse((self.profile.meta / "diagnostics/profile-2").exists())
         self.assertTrue((self.profile.meta / "diagnostics/profile-3").is_dir())
 
-    def test_final_uninstall_removes_owned_runtime_evidence_and_refuses_unknown_entries(self):
-        from plura_desktop.diagnostic_artifacts import write_runtime_diagnostic_artifact
-        from plura_desktop.runtime import descriptor_path
-        self.profile.install()
-        descriptor = descriptor_path(self.profile.meta, "default")
-        descriptor.parent.mkdir(exist_ok=True)
-        descriptor.write_text(json.dumps({"targetID": "default", "supervisorPID": 123}))
-        write_runtime_diagnostic_artifact(self.profile.meta, "default", 123, {"reason": "unexpected_eof"})
-        root = self.profile.meta / "diagnostics/runtime"
-        unknown = root / "unknown"
-        unknown.write_text("preserve")
-        with self.assertRaises(RuntimeError):
-            self.profile.uninstall(True)
-        self.assertTrue(self.profile.wrapper.exists())
-        unknown.unlink()
-        self.profile.uninstall(True)
-        self.assertFalse(root.exists())
 
     def test_uninstall_refuses_unexpected_profile_diagnostic_artifacts_before_deleting_state(self):
         self.profile.install()
@@ -513,45 +375,14 @@ class SafetyTests(unittest.TestCase):
     def test_public_target_contract_hides_platform_paths(self):
         self.profile.install()
         contract = public_targets(self.platform)
-        self.assertEqual(contract["contractVersion"], 1)
+        self.assertEqual(contract["contractVersion"], 2)
         managed = next(target for target in contract["targets"] if target.get("managed"))
         rendered = json.dumps(managed)
-        self.assertEqual(managed["backendPolicy"], "single-authoritative-profile-runtime")
-        self.assertTrue(managed["sharedAppServerSupported"])
-        self.assertTrue(managed["responsesRouteSupported"])
-        self.assertTrue(managed["rendererCDPSupported"])
-        self.assertEqual(managed["sessionState"], "available")
-        self.assertEqual(managed["rendererCDPState"], "available")
+        self.assertEqual(managed["backendPolicy"], "official-desktop-owned")
+        self.assertNotIn("endpoint", managed)
         self.assertNotIn(str(self.home), rendered)
         self.assertNotIn("CODEX_HOME", rendered)
 
-    def test_selected_target_matches_inventory_without_inspecting_other_profiles(self):
-        self.profile.install()
-        other = Profile(index=3, platform=self.platform)
-        other.install()
-        expected = next(t for t in public_targets(self.platform)["targets"]
-                        if t["id"] == self.profile.identifier)
-        original_status = Profile.status_data
-        original_running = self.platform.running
-
-        def selected_status(profile):
-            self.assertEqual(profile.index, self.profile.index)
-            return original_status(profile)
-
-        def selected_running(layout):
-            self.assertEqual(layout.index, self.profile.index)
-            return original_running(layout)
-
-        with patch.object(Profile, "status_data", selected_status), patch.object(
-            self.platform, "running", side_effect=selected_running
-        ), patch.object(self.platform, "running_default", side_effect=AssertionError("unrelated default")):
-            self.assertEqual(_target(self.platform, self.profile.identifier), expected)
-
-    def test_default_target_does_not_inspect_managed_profiles(self):
-        self.profile.install()
-        expected = public_targets(self.platform)["targets"][0]
-        with patch.object(Profile, "status_data", side_effect=AssertionError("unrelated profile")):
-            self.assertEqual(_target(self.platform, "default"), expected)
 
     def test_selected_target_rechecks_replaced_manifest(self):
         self.profile.install()
@@ -560,89 +391,11 @@ class SafetyTests(unittest.TestCase):
         manifest["id"] = "replaced"
         self.profile.manifest.write_text(json.dumps(manifest))
         self.assertEqual(_target(self.platform, self.profile.identifier)["state"], "invalid")
-        with patch("plura_desktop.manager._start_detached") as start:
+        with patch("test_safety.FakePlatform.launch") as start:
             with self.assertRaisesRegex(RuntimeError, "invalid"):
                 launch_target(self.platform, self.profile.identifier)
         start.assert_not_called()
 
-    def test_unknown_target_does_not_probe_known_profile_runtimes(self):
-        self.profile.install()
-        with patch.object(Profile, "status_data", side_effect=AssertionError("unrelated profile")), patch.object(
-            self.platform, "running_default", side_effect=AssertionError("unrelated default")
-        ):
-            with self.assertRaisesRegex(RuntimeError, "Unknown target"):
-                _target(self.platform, "unknown")
-
-    def test_launch_target_starts_canonical_runtime_by_target_identity(self):
-        self.profile.install()
-        session = TargetSession(self.profile.identifier, "ws://127.0.0.1:18762", 11, 12, 13)
-        with patch("plura_desktop.manager._start_detached") as start, patch(
-            "plura_desktop.manager._wait_for_session", return_value=session
-        ):
-            result = launch_target(self.platform, self.profile.identifier)
-        self.assertEqual(result, session)
-        command = start.call_args.args[0]
-        self.assertIn("_supervise-target", command)
-        self.assertIn(self.profile.identifier, command)
-
-    def test_renderer_cdp_args_are_explicit_loopback_only(self):
-        self.assertEqual(self.platform.renderer_cdp_args(None), [])
-        self.assertEqual(
-            self.platform.renderer_cdp_args(19222),
-            [
-                "--remote-debugging-address=127.0.0.1",
-                "--remote-debugging-port=19222",
-                "--remote-allow-origins=http://127.0.0.1:19222",
-            ],
-        )
-        self.assertNotIn("*", " ".join(self.platform.renderer_cdp_args(19222)))
-        for invalid in (True, 0, 65536):
-            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
-                self.platform.renderer_cdp_args(invalid)
-
-    def test_cold_launch_refreshes_updated_app_without_replacing_profile_state(self):
-        self.profile.install()
-        identities = {entry.role: self.platform.identity(entry.path) for entry in self.profile.layout.managed}
-        self.app.write_bytes(b"updated official fixture")
-        backend = unittest.mock.Mock(pid=101)
-        backend.poll.return_value = None
-        desktop = unittest.mock.Mock(pid=102, returncode=0)
-        desktop.poll.return_value = 0
-        with patch("plura_desktop.manager.subprocess.Popen", side_effect=[backend, desktop]), patch(
-            "plura_desktop.manager.endpoint_ready", return_value=True
-        ), patch("plura_desktop.manager._terminate_owned"), patch.object(Profile, "prepare_launch", autospec=True,
-            side_effect=Profile.prepare_launch) as prepare:
-            supervise_target(self.platform, self.profile.identifier)
-        self.assertEqual(prepare.call_count, 1)
-        self.assertEqual(self.profile.load()["official_baseline"], self.platform.fingerprint(self.app))
-        self.assertEqual(identities, {entry.role: self.platform.identity(entry.path) for entry in self.profile.layout.managed})
-
-    def test_invalid_derived_runtime_fails_before_starting_backend_or_desktop(self):
-        self.profile.install()
-        with patch.object(self.platform, "profile_executable", side_effect=RuntimeError("stale runtime")), patch(
-            "plura_desktop.manager.subprocess.Popen"
-        ) as start:
-            with self.assertRaisesRegex(RuntimeError, "stale runtime"):
-                supervise_target(self.platform, self.profile.identifier)
-        start.assert_not_called()
-
-    def test_parent_does_not_prepare_or_write_profile_runtime(self):
-        self.profile.install()
-        session = TargetSession(self.profile.identifier, "ws://127.0.0.1:18762", 11, 12, 13)
-        with patch.object(Profile, "prepare_launch", side_effect=AssertionError("parent preparation")), patch(
-            "plura_desktop.manager._start_detached"
-        ) as start, patch("plura_desktop.manager._wait_for_session", return_value=session) as wait:
-            self.assertEqual(launch_target(self.platform, self.profile.identifier), session)
-        self.assertIs(wait.call_args.kwargs["startup_process"], start.return_value)
-
-    def test_session_wait_stops_when_own_supervisor_exits(self):
-        self.profile.install()
-        child = unittest.mock.Mock()
-        child.poll.return_value = 1
-        with patch("plura_desktop.manager.time.sleep") as sleep:
-            with self.assertRaisesRegex(RuntimeError, "supervisor exited"):
-                _wait_for_session(self.platform, self.profile.identifier, startup_process=child)
-        sleep.assert_not_called()
 
     def test_updated_app_never_refreshes_a_running_profile(self):
         self.profile.install()
@@ -653,285 +406,6 @@ class SafetyTests(unittest.TestCase):
             self.profile.prepare_launch()
         self.assertEqual(self.profile.load()["official_baseline"], baseline)
 
-    def test_renderer_cdp_endpoint_contract_rejects_non_loopback_or_credentials(self):
-        self.assertTrue(valid_renderer_cdp_endpoint(None))
-        self.assertTrue(valid_renderer_cdp_endpoint("http://127.0.0.1:19222"))
-        self.assertFalse(valid_renderer_cdp_endpoint("http://0.0.0.0:19222"))
-        self.assertFalse(valid_renderer_cdp_endpoint("http://localhost:19222"))
-        self.assertFalse(valid_renderer_cdp_endpoint("https://127.0.0.1:19222"))
-        self.assertFalse(valid_renderer_cdp_endpoint("http://user@127.0.0.1:19222"))
-        self.assertFalse(valid_renderer_cdp_endpoint("http://127.0.0.1:19222/json"))
-        self.assertFalse(valid_renderer_cdp_endpoint("http://127.0.0.1:99999"))
-
-    def test_launch_target_renderer_cdp_is_opt_in_and_secret_free(self):
-        self.profile.install()
-        session = TargetSession(
-            self.profile.identifier,
-            "ws://127.0.0.1:18762",
-            11,
-            12,
-            13,
-            renderer_cdp_endpoint="http://127.0.0.1:19222",
-        )
-        with patch("plura_desktop.manager._start_detached") as start, patch(
-            "plura_desktop.manager._wait_for_session", return_value=session
-        ) as wait:
-            result = launch_target(
-                self.platform,
-                self.profile.identifier,
-                renderer_cdp=True,
-            )
-        self.assertEqual(result, session)
-        command = start.call_args.args[0]
-        self.assertIn("--renderer-cdp", command)
-        self.assertNotIn("--renderer-cdp-port", command)
-        self.assertTrue(wait.call_args.kwargs["expect_renderer_cdp"])
-
-    def test_launch_target_refuses_live_session_without_requested_renderer_cdp(self):
-        self.profile.install()
-        session = TargetSession(
-            self.profile.identifier,
-            "ws://127.0.0.1:18762",
-            os.getpid(),
-            os.getpid(),
-            os.getpid(),
-        )
-        atomic_write_session(descriptor_path(self.profile.meta, self.profile.identifier), session)
-        with patch("plura_desktop.runtime.endpoint_ready", return_value=True):
-            with self.assertRaisesRegex(RuntimeError, "without renderer CDP"):
-                launch_target(
-                    self.platform,
-                    self.profile.identifier,
-                    renderer_cdp=True,
-                )
-
-    def test_public_target_reports_renderer_restart_required_for_rendererless_ready_session(self):
-        self.profile.install()
-        session = TargetSession(
-            self.profile.identifier,
-            "ws://127.0.0.1:18762",
-            os.getpid(),
-            os.getpid(),
-            os.getpid(),
-        )
-        atomic_write_session(descriptor_path(self.profile.meta, self.profile.identifier), session)
-        with patch("plura_desktop.runtime.endpoint_ready", return_value=True):
-            contract = public_targets(self.platform)
-        managed = next(target for target in contract["targets"] if target.get("managed"))
-        self.assertEqual(managed["sessionState"], "ready")
-        self.assertEqual(managed["rendererCDPState"], "restart-required")
-
-    def test_launch_target_json_emits_only_the_public_ready_session_contract(self):
-        route = ResponsesRoute.create(
-            "http://127.0.0.1:18741/v1",
-            "CHATGPT_TELA_RUNTIME_TOKEN",
-            "s" * 48,
-        )
-        session_value = {
-            "contractVersion": 1,
-            "targetID": self.profile.identifier,
-            "state": "ready",
-            "endpoint": "ws://127.0.0.1:18762",
-            "responsesRouteFingerprint": route.fingerprint,
-        }
-        output = io.StringIO()
-        with patch.dict(os.environ, {"CHATGPT_TELA_RUNTIME_TOKEN": "secret-value" * 4}, clear=False), patch(
-            "plura_desktop.cli.current_platform", return_value=self.platform
-        ), patch(
-            "plura_desktop.cli.launch_target"
-        ) as launch, patch(
-            "plura_desktop.cli.target_session", return_value=session_value
-        ), redirect_stdout(output):
-            result = cli_main([
-                "launch-target",
-                "--target",
-                self.profile.identifier,
-                "--responses-base-url",
-                route.base_url,
-                "--responses-env-key",
-                route.env_key,
-                "--json",
-            ])
-
-        self.assertEqual(result, 0)
-        launch.assert_called_once()
-        self.assertEqual(json.loads(output.getvalue()), session_value)
-        self.assertNotIn("secret-value", output.getvalue())
-
-    def test_launch_target_cli_renderer_cdp_is_explicit_opt_in(self):
-        session_value = {
-            "contractVersion": 1,
-            "targetID": self.profile.identifier,
-            "state": "ready",
-            "endpoint": "ws://127.0.0.1:18762",
-            "rendererCDPEndpoint": "http://127.0.0.1:19222",
-        }
-        output = io.StringIO()
-        with patch(
-            "plura_desktop.cli.current_platform", return_value=self.platform
-        ), patch(
-            "plura_desktop.cli.launch_target"
-        ) as launch, patch(
-            "plura_desktop.cli.target_session", return_value=session_value
-        ), redirect_stdout(output):
-            result = cli_main([
-                "launch-target",
-                "--target",
-                self.profile.identifier,
-                "--renderer-cdp",
-                "--json",
-            ])
-
-        self.assertEqual(result, 0)
-        self.assertTrue(launch.call_args.kwargs["renderer_cdp"])
-        self.assertEqual(json.loads(output.getvalue()), session_value)
-
-    def test_launch_target_passes_only_secret_free_responses_route_metadata(self):
-        self.profile.install()
-        route = ResponsesRoute.create(
-            "http://127.0.0.1:18741/v1",
-            "CHATGPT_TELA_RUNTIME_TOKEN",
-            "secret-value" * 4,
-        )
-        session = TargetSession(
-            self.profile.identifier,
-            "ws://127.0.0.1:18762",
-            11,
-            12,
-            13,
-            route.fingerprint,
-        )
-        with patch.dict(os.environ, {"CHATGPT_TELA_RUNTIME_TOKEN": "secret-value"}, clear=False), patch(
-            "plura_desktop.manager._start_detached"
-        ) as start, patch(
-            "plura_desktop.manager._wait_for_session", return_value=session
-        ) as wait:
-            result = launch_target(
-                self.platform,
-                self.profile.identifier,
-                responses_route=route,
-            )
-        self.assertEqual(result, session)
-        command = start.call_args.args[0]
-        self.assertIn("--responses-base-url", command)
-        self.assertIn(route.base_url, command)
-        self.assertIn("--responses-env-key", command)
-        self.assertIn(route.env_key, command)
-        self.assertNotIn("secret-value", command)
-        self.assertEqual(
-            wait.call_args.kwargs["expected_responses_route_fingerprint"],
-            route.fingerprint,
-        )
-
-    def test_launch_target_refuses_to_rebind_a_live_different_responses_route(self):
-        self.profile.install()
-        current = ResponsesRoute.create("http://127.0.0.1:18741/v1", "FIRST_TOKEN", "a" * 48)
-        requested = ResponsesRoute.create("http://127.0.0.1:18742/v1", "SECOND_TOKEN", "b" * 48)
-        session = TargetSession(
-            self.profile.identifier,
-            "ws://127.0.0.1:18762",
-            os.getpid(),
-            os.getpid(),
-            os.getpid(),
-            current.fingerprint,
-        )
-        atomic_write_session(descriptor_path(self.profile.meta, self.profile.identifier), session)
-        with patch("plura_desktop.runtime.endpoint_ready", return_value=True):
-            with self.assertRaisesRegex(RuntimeError, "different Responses route"):
-                launch_target(
-                    self.platform,
-                    self.profile.identifier,
-                    responses_route=requested,
-                )
-
-    def test_default_target_uses_same_public_launch_contract(self):
-        session = TargetSession("default", "ws://127.0.0.1:18760", 21, 22, 23)
-        with patch("plura_desktop.manager._start_detached"), patch(
-            "plura_desktop.manager._wait_for_session", return_value=session
-        ):
-            self.assertEqual(launch_target(self.platform, "default"), session)
-
-    def test_default_target_supervisor_does_not_require_managed_profile_metadata(self):
-        with patch(
-            "plura_desktop.manager.Profile",
-            side_effect=AssertionError("default target must not construct a managed Profile"),
-        ), patch(
-            "plura_desktop.manager.subprocess.Popen",
-            side_effect=RuntimeError("backend launch reached"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "backend launch reached"):
-                _supervise_target(self.platform, "default")
-
-    def test_canonical_runtime_refuses_already_private_running_target(self):
-        self.profile.install()
-        self.platform.running_pids = [123]
-        with self.assertRaisesRegex(RuntimeError, "outside the canonical runtime"):
-            launch_target(self.platform, self.profile.identifier)
-
-    def test_target_session_uses_one_live_snapshot_for_related_states(self):
-        session = TargetSession(
-            self.profile.identifier, "ws://127.0.0.1:18762",
-            os.getpid(), os.getpid(), os.getpid(),
-            renderer_cdp_endpoint="http://127.0.0.1:19222",
-        )
-        target = {"id": self.profile.identifier, "state": "running",
-                  "sharedAppServerSupported": True, "rendererCDPSupported": True}
-        with patch("plura_desktop.manager._target", return_value=target), patch(
-            "plura_desktop.manager.load_session", side_effect=[session, None]
-        ) as observed:
-            value = target_session(self.platform, self.profile.identifier)
-        self.assertEqual(observed.call_count, 1)
-        self.assertEqual(value["state"], "ready")
-        self.assertEqual(value["rendererCDPState"], "ready")
-        self.assertEqual(value["desktopProcessID"], session.desktop_pid)
-
-    def test_public_inventory_observes_each_session_once(self):
-        self.profile.install()
-        observed = []
-        def observe(platform, metadata, target_id):
-            self.assertNotIn(target_id, observed)
-            observed.append(target_id)
-            if target_id == self.profile.identifier:
-                return TargetSession(target_id, "ws://127.0.0.1:18762",
-                                     os.getpid(), os.getpid(), os.getpid())
-            return None
-        with patch("plura_desktop.manager.load_session", side_effect=observe):
-            result = public_targets(self.platform)
-        managed = next(t for t in result["targets"] if t["id"] == self.profile.identifier)
-        self.assertEqual(managed["sessionState"], "ready")
-        self.assertEqual(managed["rendererCDPState"], "restart-required")
-        self.assertEqual(len(observed), len(result["targets"]))
-
-    def test_target_session_contract_exposes_live_endpoint_and_desktop_process_identity(self):
-        self.profile.install()
-        path = descriptor_path(self.profile.meta, self.profile.identifier)
-        session = TargetSession(self.profile.identifier, "ws://127.0.0.1:18762", os.getpid(), os.getpid(), os.getpid())
-        atomic_write_session(path, session)
-        with patch("plura_desktop.runtime.endpoint_ready", return_value=True):
-            value = target_session(self.platform, self.profile.identifier)
-        self.assertEqual(value["state"], "ready")
-        self.assertEqual(value["endpoint"], session.endpoint)
-        self.assertEqual(value["desktopProcessID"], session.desktop_pid)
-        self.assertNotIn(str(self.home), json.dumps(value))
-
-    def test_target_session_exposes_only_loopback_renderer_cdp_capability(self):
-        self.profile.install()
-        path = descriptor_path(self.profile.meta, self.profile.identifier)
-        session = TargetSession(
-            self.profile.identifier,
-            "ws://127.0.0.1:18762",
-            os.getpid(),
-            os.getpid(),
-            os.getpid(),
-            renderer_cdp_endpoint="http://127.0.0.1:19222",
-        )
-        atomic_write_session(path, session)
-        with patch("plura_desktop.runtime.endpoint_ready", return_value=True):
-            value = target_session(self.platform, self.profile.identifier)
-        self.assertEqual(value["rendererCDPEndpoint"], "http://127.0.0.1:19222")
-        rendered = json.dumps(value)
-        self.assertNotIn(str(self.home), rendered)
-        self.assertNotIn("remote-allow-origins", rendered)
 
     def test_target_session_exposes_desktop_identity_for_noncanonical_running_target(self):
         self.profile.install()
@@ -939,33 +413,10 @@ class SafetyTests(unittest.TestCase):
         self.platform.running_pids = [123]
         self.platform.desktop_process_ids[str(executable)] = 123
         value = target_session(self.platform, self.profile.identifier)
-        self.assertEqual(value["state"], "restart-required")
+        self.assertEqual(value["state"], "running")
         self.assertEqual(value["desktopProcessID"], 123)
         self.assertNotIn("endpoint", value)
 
-    def test_target_session_exposes_route_fingerprint_but_not_route_or_secret(self):
-        self.profile.install()
-        route = ResponsesRoute.create(
-            "http://127.0.0.1:18741/v1",
-            "CHATGPT_TELA_RUNTIME_TOKEN",
-            "s" * 48,
-        )
-        path = descriptor_path(self.profile.meta, self.profile.identifier)
-        session = TargetSession(
-            self.profile.identifier,
-            "ws://127.0.0.1:18762",
-            os.getpid(),
-            os.getpid(),
-            os.getpid(),
-            route.fingerprint,
-        )
-        atomic_write_session(path, session)
-        with patch("plura_desktop.runtime.endpoint_ready", return_value=True):
-            value = target_session(self.platform, self.profile.identifier)
-        rendered = json.dumps(value)
-        self.assertEqual(value["responsesRouteFingerprint"], route.fingerprint)
-        self.assertNotIn(route.base_url, rendered)
-        self.assertNotIn(route.env_key, rendered)
 
     def test_quit_target_requests_normal_quit_for_exact_desktop_identity(self):
         self.profile.install()
@@ -981,48 +432,20 @@ class SafetyTests(unittest.TestCase):
         available = {
             "contractVersion": 1,
             "targetID": self.profile.identifier,
-            "state": "available",
+            "state": "stopped",
         }
         with patch("plura_desktop.manager.target_session", side_effect=[ready, available]):
             result = quit_target(self.platform, self.profile.identifier, expected_desktop_pid=123)
         self.assertEqual(result, available)
         self.assertEqual(self.platform.quit_requests, [(str(executable), 123)])
 
-    def test_quit_target_waits_through_transient_restart_required_until_relaunchable(self):
-        self.profile.install()
-        executable = self.platform.resolve_executable(self.profile.load()["app_executable"])
-        self.platform.desktop_process_ids[str(executable)] = 123
-        ready = {
-            "contractVersion": 1,
-            "targetID": self.profile.identifier,
-            "state": "ready",
-            "endpoint": "ws://127.0.0.1:18762",
-            "desktopProcessID": 123,
-        }
-        restarting = {
-            "contractVersion": 1,
-            "targetID": self.profile.identifier,
-            "state": "restart-required",
-        }
-        available = {
-            "contractVersion": 1,
-            "targetID": self.profile.identifier,
-            "state": "available",
-        }
-        with patch(
-            "plura_desktop.manager.target_session",
-            side_effect=[ready, restarting, available],
-        ):
-            result = quit_target(self.platform, self.profile.identifier)
-        self.assertEqual(result, available)
-        self.assertEqual(self.platform.quit_requests, [(str(executable), 123)])
 
     def test_quit_target_is_idempotent_when_target_is_not_running(self):
         self.profile.install()
         available = {
             "contractVersion": 1,
             "targetID": self.profile.identifier,
-            "state": "available",
+            "state": "stopped",
         }
         with patch("plura_desktop.manager.target_session", return_value=available):
             self.assertEqual(quit_target(self.platform, self.profile.identifier), available)
@@ -1059,7 +482,7 @@ class SafetyTests(unittest.TestCase):
         session_value = {
             "contractVersion": 1,
             "targetID": self.profile.identifier,
-            "state": "available",
+            "state": "stopped",
         }
         output = io.StringIO()
         with patch(
@@ -1074,340 +497,9 @@ class SafetyTests(unittest.TestCase):
                 "--json",
             ])
         self.assertEqual(result, 0)
-        quit_.assert_called_once_with(self.platform, self.profile.identifier)
+        quit_.assert_called_once_with(self.platform, self.profile.identifier, expected_desktop_pid=None)
         self.assertEqual(json.loads(output.getvalue()), session_value)
 
-    def test_responses_route_validation_is_loopback_and_env_key_only(self):
-        route = ResponsesRoute.create(
-            "http://localhost:18741/v1/",
-            "CHATGPT_TELA_RUNTIME_TOKEN",
-            "s" * 48,
-        )
-        self.assertEqual(route.base_url, "http://localhost:18741/v1")
-        with self.assertRaisesRegex(ValueError, "loopback"):
-            ResponsesRoute.create("https://example.com/v1", "CHATGPT_TELA_RUNTIME_TOKEN", "s" * 48)
-        with self.assertRaisesRegex(ValueError, "path must be /v1"):
-            ResponsesRoute.create("http://127.0.0.1:18741/other", "CHATGPT_TELA_RUNTIME_TOKEN", "s" * 48)
-        with self.assertRaisesRegex(ValueError, "uppercase environment variable"):
-            ResponsesRoute.create("http://127.0.0.1:18741/v1", "bad-key", "s" * 48)
-        with self.assertRaisesRegex(ValueError, "at least 32 characters"):
-            ResponsesRoute.create("http://127.0.0.1:18741/v1", "CHATGPT_TELA_RUNTIME_TOKEN", "short")
-
-    def test_responses_route_fingerprint_changes_when_only_the_credential_changes(self):
-        first = ResponsesRoute.create(
-            "http://127.0.0.1:18741/v1",
-            "CHATGPT_TELA_RUNTIME_TOKEN",
-            "a" * 48,
-        )
-        second = ResponsesRoute.create(
-            "http://127.0.0.1:18741/v1",
-            "CHATGPT_TELA_RUNTIME_TOKEN",
-            "b" * 48,
-        )
-        self.assertNotEqual(first.fingerprint, second.fingerprint)
-
-    def test_responses_runtime_header_is_sourced_from_env_without_exposing_secret(self):
-        route = ResponsesRoute.create(
-            "http://127.0.0.1:18741/v1", "CHATGPT_TELA_RUNTIME_TOKEN", "s" * 48,
-            "OpenAI-Organization",
-        )
-        self.assertEqual(route.thread_config_overlay(), {
-            "model_provider": "openai",
-            "openai_base_url": "http://127.0.0.1:18741/v1",
-        })
-        self.assertEqual(route.runtime_env_key, "OPENAI_ORGANIZATION")
-        self.assertIn('openai_base_url="http://127.0.0.1:18741/v1"',
-                      "\n".join(route.codex_config_args()))
-        self.assertNotIn("model_providers", "\n".join(route.codex_config_args()))
-        self.assertNotIn("s" * 48, "\n".join(route.codex_config_args()))
-        with self.assertRaisesRegex(ValueError, "runtime header"):
-            ResponsesRoute.create("http://127.0.0.1:18741/v1", "CHATGPT_TELA_RUNTIME_TOKEN", "s" * 48,
-                                  "Bad Header")
-
-    def test_app_server_launch_routes_with_config_overrides_and_never_places_secret_on_argv(self):
-        route = ResponsesRoute.create(
-            "http://127.0.0.1:18741/v1",
-            "CHATGPT_TELA_RUNTIME_TOKEN",
-            "super-secret" * 4,
-        )
-        with patch.dict(os.environ, {"CHATGPT_TELA_RUNTIME_TOKEN": "super-secret"}, clear=True):
-            launch = self.platform.app_server_launch(
-                self.home / ".codex",
-                "ws://127.0.0.1:19001",
-                chatgpt_executable=self.app,
-                responses_route=route,
-            )
-        command = launch.command
-        environment = launch.environment
-        self.assertNotIn("super-secret", repr(launch))
-        self.assertEqual(command[1], "app-server")
-        rendered = "\n".join(command)
-        self.assertIn('model_provider="openai"', rendered)
-        self.assertIn(f'openai_base_url="{route.base_url}"', rendered)
-        self.assertNotIn("model_providers", rendered)
-        self.assertNotIn("super-secret", rendered)
-        self.assertEqual(environment[route.env_key], "super-secret")
-        self.assertEqual(environment["OPENAI_ORGANIZATION"], "super-secret")
-
-        with patch.dict(os.environ, {
-            route.env_key: "super-secret",
-            "OPENAI_ORGANIZATION": "existing-organization",
-        }, clear=False):
-            with self.assertRaisesRegex(RuntimeError, "cannot replace an existing OPENAI_ORGANIZATION"):
-                self.platform.app_server_launch(
-                    self.home / ".codex",
-                    "ws://127.0.0.1:19001",
-                    chatgpt_executable=self.app,
-                    responses_route=route,
-                )
-
-    def test_direct_desktop_refuses_changed_proof_and_cleans_owned_backend(self):
-        self.profile.install()
-        backend = unittest.mock.Mock(pid=101)
-        backend.poll.return_value = None
-        with patch("plura_desktop.manager.endpoint_ready", return_value=True), patch(
-            "plura_desktop.manager.subprocess.Popen", return_value=backend
-        ) as spawn, patch.object(Profile, "prepare_launch", side_effect=RuntimeError("desktop signature mismatch")), patch(
-            "plura_desktop.manager._terminate_owned"
-        ) as terminate:
-            with self.assertRaisesRegex(RuntimeError, "desktop signature mismatch"):
-                supervise_target(self.platform, self.profile.identifier)
-        spawn.assert_not_called()
-        terminate.assert_not_called()
-        self.assertFalse(descriptor_path(self.profile.meta, self.profile.identifier).exists())
-        claim = acquire_runtime_claim(self.platform, self.profile.meta, self.profile.identifier)
-        release_runtime_claim(claim)
-
-    def test_desktop_use_rechecks_prepared_runtime_after_backend_start(self):
-        self.profile.install()
-        backend = unittest.mock.Mock(pid=101)
-        backend.poll.return_value = None
-        with patch("plura_desktop.manager.endpoint_ready", return_value=True), patch(
-            "plura_desktop.manager.subprocess.Popen", return_value=backend
-        ) as spawn, patch("plura_desktop.manager._target_executable", side_effect=RuntimeError("changed runtime")), patch(
-            "plura_desktop.manager._terminate_owned"
-        ) as terminate:
-            with self.assertRaisesRegex(RuntimeError, "changed runtime"):
-                supervise_target(self.platform, self.profile.identifier)
-        self.assertEqual(spawn.call_count, 1)
-        terminate.assert_called_once_with(backend)
-        self.assertFalse(descriptor_path(self.profile.meta, self.profile.identifier).exists())
-        claim = acquire_runtime_claim(self.platform, self.profile.meta, self.profile.identifier)
-        release_runtime_claim(claim)
-
-    def test_direct_backend_refuses_invalid_launch_proof_before_spawning(self):
-        self.profile.install()
-        with patch.object(self.platform, "app_server_launch", side_effect=RuntimeError("hash mismatch")), patch(
-            "plura_desktop.manager.subprocess.Popen"
-        ) as spawn:
-            with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
-                supervise_target(self.platform, self.profile.identifier)
-        spawn.assert_not_called()
-        self.assertFalse(descriptor_path(self.profile.meta, self.profile.identifier).exists())
-        # Failure released ownership: a later explicit launch can acquire it normally.
-        claim = acquire_runtime_claim(self.platform, self.profile.meta, self.profile.identifier)
-        release_runtime_claim(claim)
-
-    def test_app_server_launch_revalidates_engine_bytes_and_refuses_missing_credential(self):
-        import hashlib
-        engine = self.home / "owned-engine"
-        engine.write_bytes(b"verified engine")
-        engine.chmod(0o700)
-        expected = hashlib.sha256(engine.read_bytes()).hexdigest()
-        platform = LinuxPlatform(home=self.home, app_override=self.app)
-        environment = {"CODEX_EXECUTABLE": str(engine), "CODEX_EXECUTABLE_SHA256": expected}
-        with patch.dict(os.environ, environment, clear=True):
-            spec = platform.app_server_launch(self.home / ".codex", "ws://127.0.0.1:19001",
-                                             chatgpt_executable=self.app)
-            self.assertEqual(spec.command[0], str(engine))
-            engine.write_bytes(b"replaced engine")
-            with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
-                platform.app_server_launch(self.home / ".codex", "ws://127.0.0.1:19001",
-                                           chatgpt_executable=self.app)
-        route = ResponsesRoute.create("http://127.0.0.1:18741/v1", "TEST_ROUTE_TOKEN", "s" * 48)
-        with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "credential environment variable is missing"):
-                self.platform.app_server_launch(self.home / ".codex", "ws://127.0.0.1:19001",
-                                                chatgpt_executable=self.app, responses_route=route)
-
-    @unittest.skipUnless(os.name == "posix", "POSIX process-group lifecycle")
-    def test_supervisor_isolates_children_and_cleans_up_after_group_signals(self):
-        self.profile.install()
-        fixture = '''
-import os, sys, time, signal
-from pathlib import Path
-from unittest.mock import patch
-from test_safety import FakePlatform
-from plura_desktop.manager import supervise_target
-from plura_desktop.platforms.base import AppServerLaunch, DesktopLaunch
-home, app = Path(sys.argv[1]), Path(sys.argv[2])
-child_code = """
-import os, signal, sys, time
-from pathlib import Path
-home, role = Path(sys.argv[1]), sys.argv[2]
-signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-signal.signal(signal.SIGHUP, lambda *_: (home / (role + '.draining')).write_text('draining'))
-(home / (role + '.pid')).write_text(str(os.getpid()))
-while True: time.sleep(.05)
-"""
-def command(platform, operation, *args):
-    return [sys.executable, '-c', child_code, str(home), 'desktop']
-with patch.object(FakePlatform, 'desktop_launch_spec', return_value=DesktopLaunch(
-    (sys.executable, '-c', child_code, str(home), 'desktop'),
-    {**os.environ, 'CODEX_ELECTRON_USER_DATA_PATH': str(FakePlatform(home, app).layout(2).user_data)}, home
-)), patch(
-    'plura_desktop.manager.endpoint_ready', return_value=True
-), patch.object(FakePlatform, 'app_server_launch', return_value=AppServerLaunch(
-    (sys.executable, '-c', child_code, str(home), 'backend'), dict(os.environ)
-)):
-    supervise_target(FakePlatform(home, app), 'local.plura-desktop.profile2')
-'''
-        env = {
-            "HOME": str(self.home), "PATH": os.environ.get("PATH", ""),
-            "PYTHONPATH": os.pathsep.join([str(SRC), str(ROOT / "tests")]),
-        }
-        supervisor = subprocess.Popen(
-            [sys.executable, "-c", fixture, str(self.home), str(self.app)],
-            env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        children = []
-        try:
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                if all((self.home / (role + ".pid")).exists() for role in ("backend", "desktop")):
-                    break
-                self.assertIsNone(supervisor.poll(), "fixture supervisor exited during startup")
-                time.sleep(.02)
-            children = [int((self.home / (role + ".pid")).read_text()) for role in ("backend", "desktop")]
-            os.killpg(supervisor.pid, signal.SIGHUP)
-            time.sleep(.15)
-            self.assertIsNone(supervisor.poll(), "detached supervisor must survive a launcher hangup")
-            self.assertTrue(all(os.getpgid(pid) != supervisor.pid for pid in children))
-            self.assertFalse(any((self.home / (role + ".draining")).exists() for role in ("backend", "desktop")))
-            os.killpg(supervisor.pid, signal.SIGTERM)
-            supervisor.wait(timeout=10)
-            self.assertFalse(descriptor_path(self.profile.meta, self.profile.identifier).exists())
-            for pid in children:
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(pid, 0)
-        finally:
-            if supervisor.poll() is None:
-                os.kill(supervisor.pid, signal.SIGKILL)
-                supervisor.wait(timeout=5)
-            for pid in children:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-
-    def test_windows_owned_processes_use_a_separate_console_group(self):
-        from plura_desktop.manager import _owned_process_options
-        with patch("plura_desktop.manager.os.name", "nt"), patch.object(
-            subprocess, "CREATE_NEW_PROCESS_GROUP", 512, create=True
-        ):
-            self.assertEqual(_owned_process_options(), {"creationflags": 512})
-
-    def test_supervisor_keeps_routed_backend_private_and_publishes_proxy_endpoint(self):
-        self.profile.install()
-        route = ResponsesRoute.create(
-            "http://127.0.0.1:18741/v1",
-            "CHATGPT_TELA_RUNTIME_TOKEN",
-            "s" * 48,
-        )
-        backend_endpoint = "ws://127.0.0.1:19001"
-        proxy_endpoint = "ws://127.0.0.1:19002"
-        captured_sessions: list[TargetSession] = []
-
-        class FakeProcess:
-            def __init__(self, pid: int, *, exited: bool = False) -> None:
-                self.pid = pid
-                self.returncode = 0 if exited else None
-
-            def poll(self):
-                return self.returncode
-
-        backend = FakeProcess(101)
-        desktop = FakeProcess(102, exited=True)
-
-        class FakeProxy:
-            instance = None
-
-            def __init__(self, listen_url, upstream_url, configured_route, *, transport_failure=None):
-                self.listen_url = listen_url
-                self.upstream_url = upstream_url
-                self.route = configured_route
-                self.fatal_error = None
-                self.is_alive = True
-                self.started = False
-                self.closed = False
-                FakeProxy.instance = self
-
-            def start(self):
-                self.started = True
-
-            def close(self):
-                self.closed = True
-
-        with patch(
-            "plura_desktop.manager._allocate_loopback_endpoint",
-            side_effect=[backend_endpoint, proxy_endpoint],
-        ), patch(
-            "plura_desktop.manager.endpoint_ready",
-            return_value=True,
-        ), patch(
-            "plura_desktop.manager.RoutePreservingAppServerProxy",
-            FakeProxy,
-        ), patch(
-            "plura_desktop.manager.subprocess.Popen",
-            side_effect=[backend, desktop],
-        ) as popen, patch(
-            "plura_desktop.manager.atomic_write_session",
-            side_effect=lambda _path, session: captured_sessions.append(session),
-        ), patch(
-            "plura_desktop.manager._terminate_owned"
-        ):
-            with patch.dict(os.environ, {route.env_key: "s" * 48}, clear=True):
-                result = supervise_target(
-                    self.platform,
-                    self.profile.identifier,
-                    responses_route=route,
-                )
-
-        self.assertEqual(result, 0)
-        self.assertEqual(len(captured_sessions), 1)
-        self.assertEqual(captured_sessions[0].endpoint, proxy_endpoint)
-        self.assertEqual(captured_sessions[0].responses_route_fingerprint, route.fingerprint)
-        self.assertIsNotNone(FakeProxy.instance)
-        self.assertEqual(FakeProxy.instance.listen_url, proxy_endpoint)
-        self.assertEqual(FakeProxy.instance.upstream_url, backend_endpoint)
-        self.assertIs(FakeProxy.instance.route, route)
-        self.assertTrue(FakeProxy.instance.started)
-        self.assertTrue(FakeProxy.instance.closed)
-
-        backend_call = popen.call_args_list[0]
-        backend_command = backend_call.args[0]
-        self.assertEqual(backend_command[0], str(self.app))
-        self.assertEqual(backend_command[1], "app-server")
-        self.assertEqual(backend_call.kwargs["env"]["CODEX_HOME"], str(self.profile.codex))
-        self.assertEqual(backend_call.kwargs["env"][route.env_key], "s" * 48)
-        self.assertNotIn("_serve-target", backend_command)
-        desktop_command = popen.call_args_list[1].args[0]
-        self.assertIn(backend_endpoint, backend_command)
-        self.assertNotIn(proxy_endpoint, backend_command)
-        self.assertIn(proxy_endpoint, desktop_command)
-        self.assertNotIn(backend_endpoint, desktop_command)
-        self.assertNotIn("s" * 48, "\n".join(backend_command + desktop_command))
-
-    def test_runtime_claim_serializes_concurrent_launch_owners(self):
-        self.profile.install()
-        claim = acquire_runtime_claim(self.platform, self.profile.meta, self.profile.identifier)
-        try:
-            with self.assertRaisesRegex(RuntimeError, "already owned"):
-                acquire_runtime_claim(self.platform, self.profile.meta, self.profile.identifier)
-        finally:
-            release_runtime_claim(claim)
-        replacement = acquire_runtime_claim(self.platform, self.profile.meta, self.profile.identifier)
-        release_runtime_claim(replacement)
 
     def test_profile_three_scales_without_fixed_two_profile_branch(self):
         profile = Profile(index=3, platform=self.platform)
@@ -1464,33 +556,6 @@ class PlatformContractTests(unittest.TestCase):
         ):
             self.assertEqual(platform.resolve_executable(), executable.resolve())
 
-    def test_linux_resolves_codex_from_official_package_layout(self):
-        package_root = self.home / "usr/lib/chatgpt"
-        package_root.mkdir(parents=True)
-        launcher = package_root / "codex-launcher"
-        desktop = package_root / "ChatGPT"
-        codex = package_root / "resources/codex"
-        codex.parent.mkdir(parents=True)
-        for path in (launcher, desktop, codex):
-            path.write_bytes(b"fixture")
-            if os.name != "nt":
-                path.chmod(0o755)
-        platform = LinuxPlatform(home=self.home, app_override=launcher)
-        self.assertEqual(platform.resolve_executable(), desktop.resolve())
-        self.assertEqual(platform.resolve_codex_executable(launcher), codex.resolve())
-
-    def test_linux_official_package_layout_fails_closed_without_bundled_codex(self):
-        package_root = self.home / "usr/lib/chatgpt"
-        package_root.mkdir(parents=True)
-        launcher = package_root / "codex-launcher"
-        desktop = package_root / "ChatGPT"
-        for path in (launcher, desktop):
-            path.write_bytes(b"fixture")
-            if os.name != "nt":
-                path.chmod(0o755)
-        platform = LinuxPlatform(home=self.home, app_override=launcher)
-        with self.assertRaisesRegex(RuntimeError, "Bundled Codex executable"):
-            platform.resolve_codex_executable(launcher)
 
     def test_linux_preserves_only_required_desktop_session_environment(self):
         with patch.dict(
@@ -1585,7 +650,7 @@ class PlatformContractTests(unittest.TestCase):
         self.assertIn(str(standalone), text)
         self.assertIn("launch-target", text)
         self.assertIn("--target local.plura-desktop.profile2", text)
-        self.assertIn("--renderer-cdp", text)
+        self.assertNotIn("--renderer-cdp", text)
         self.assertNotIn(" launch --profile ", text)
 
     def test_windows_standalone_helpers_preserve_stable_runtime_environment(self):
@@ -1621,60 +686,6 @@ class PlatformContractTests(unittest.TestCase):
         self.assertIn(expected, selector_text)
         self.assertIn(expected, helper_text)
 
-    def test_linux_normal_launch_detaches_but_shared_launch_owns_lifetime(self):
-        with patch.dict(
-            os.environ,
-            {
-                "XDG_DATA_HOME": str(self.home / "xdg-data"),
-                "XDG_CONFIG_HOME": str(self.home / "xdg-config"),
-                "XDG_STATE_HOME": str(self.home / "xdg-state"),
-            },
-            clear=False,
-        ):
-            platform = LinuxPlatform(home=self.home, app_override=self.app)
-            layout = platform.layout(2)
-            with patch("plura_desktop.platforms.base.subprocess.Popen") as popen:
-                platform.launch(layout, self.app, rust_log=None)
-                popen.assert_called_once()
-            with (
-                patch("plura_desktop.platforms.linux.os.chdir") as chdir,
-                patch("plura_desktop.platforms.linux.os.execve") as execve,
-            ):
-                platform.launch(
-                    layout,
-                    self.app,
-                    rust_log=None,
-                    app_server_url="ws://127.0.0.1:19002",
-                )
-                chdir.assert_called_once_with(self.home)
-                execve.assert_called_once()
-
-    def test_windows_normal_launch_detaches_but_shared_launch_owns_lifetime(self):
-        with patch.dict(
-            os.environ,
-            {
-                "LOCALAPPDATA": str(self.home / "Local"),
-                "APPDATA": str(self.home / "Roaming"),
-            },
-            clear=False,
-        ):
-            platform = WindowsPlatform(home=self.home, app_override=self.app)
-            layout = platform.layout(2)
-            with patch("plura_desktop.platforms.windows.subprocess.Popen") as popen:
-                platform.launch(layout, self.app, rust_log=None)
-                popen.assert_called_once()
-            with (
-                patch("plura_desktop.platforms.windows.os.chdir") as chdir,
-                patch("plura_desktop.platforms.windows.os.execve") as execve,
-            ):
-                platform.launch(
-                    layout,
-                    self.app,
-                    rust_log=None,
-                    app_server_url="ws://127.0.0.1:19002",
-                )
-                chdir.assert_called_once_with(self.home)
-                execve.assert_called_once()
 
     def test_noncanonical_manifest_schema_is_refused(self):
         platform = FakePlatform(self.home, self.app)
@@ -1686,124 +697,6 @@ class PlatformContractTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Unsupported install manifest schema"):
             profile.load()
 
-    @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
-    def test_macos_adapter_installs_and_removes_fake_selector(self):
-        fake_bundle = self.home / "ChatGPT.app"
-        executable = fake_bundle / "Contents/MacOS/ChatGPT"
-        executable.parent.mkdir(parents=True)
-        executable.write_bytes(b"fixture")
-        executable.chmod(0o755)
-        icon = fake_bundle / "Contents/Resources/electron.icns"
-        icon.parent.mkdir(parents=True)
-        icon.write_bytes(b"icon")
-        app_asar = fake_bundle / "Contents/Resources/app.asar"
-        app_asar.write_bytes(b"asar-fixture")
-        with (fake_bundle / "Contents/Info.plist").open("wb") as file:
-            plistlib.dump({"CFBundleIconFile": "electron.icns"}, file)
-        # Canonical launch requires a bundled engine; never discover the real host CLI.
-        package = fake_bundle / "Contents/Resources/codex-cli"
-        (package / "bin").mkdir(parents=True)
-        (package / "codex-package.json").write_text('{"entrypoint":"bin/codex"}')
-        bundled_engine = package / "bin/codex"
-        bundled_engine.write_bytes(b"fixture-engine")
-        bundled_engine.chmod(0o755)
-        source_before = {
-            path.relative_to(fake_bundle): path.read_bytes()
-            for path in (executable, icon, app_asar, fake_bundle / "Contents/Info.plist")
-        }
-        platform = MacOSPlatform(home=self.home, app_override=executable)
-        profile = Profile(index=2, platform=platform)
-        profile.install()
-        manifest = profile.load()
-        selector_launcher = profile.wrapper / "Contents/MacOS/launcher"
-        self.assertTrue(selector_launcher.is_file())
-        selector_text = selector_launcher.read_text(encoding="utf-8")
-        self.assertIn("launch-target", selector_text)
-        self.assertIn(f"--target {profile.identifier}", selector_text)
-        self.assertIn("--renderer-cdp", selector_text)
-        self.assertIn(sys.executable, selector_text)
-        with (profile.wrapper / "Contents/Info.plist").open("rb") as file:
-            selector_info = plistlib.load(file)
-        self.assertEqual(selector_info["CFBundleShortVersionString"], __version__)
-        self.assertEqual(selector_info["CFBundleVersion"], __version__)
-        self.assertTrue((profile.meta / "plura-desktop").is_file())
-        self.assertTrue((profile.meta / "control-runtime/plura_desktop_cli.py").is_file())
-        runtime_bundle = profile.meta / "runtime-apps/profile-2/ChatGPT.app"
-        runtime_executable = runtime_bundle / "Contents/MacOS/ChatGPT"
-        self.assertTrue(runtime_executable.is_file())
-        self.assertNotEqual(runtime_executable, executable)
-        self.assertEqual(runtime_executable.read_bytes(), executable.read_bytes())
-        self.assertEqual(
-            platform.profile_executable(
-                profile.layout,
-                executable,
-                source_fingerprint=manifest["official_baseline"],
-            ),
-            runtime_executable,
-        )
-        self.assertEqual(manifest["platform"], "macos")
-        # Preparation returns its verified executable without repeating the full
-        # signature/hash scan in the same synchronous launch operation.
-        with patch.object(platform, "_verify_runtime_signature", wraps=platform._verify_runtime_signature) as verify:
-            self.assertEqual(profile.prepare_launch(), runtime_executable)
-            verify.assert_called_once_with(runtime_bundle)
-        # A rejected signature still prevents returning an executable, including
-        # when preparation tries to rebuild disposable derived code.
-        with patch.object(platform, "_verify_runtime_signature", side_effect=subprocess.CalledProcessError(1, "codesign")):
-            with self.assertRaises(subprocess.CalledProcessError):
-                profile.prepare_launch()
-        self.assertEqual(runtime_executable.read_bytes(), source_before[Path("Contents/MacOS/ChatGPT")])
-        for relative, before in source_before.items():
-            self.assertEqual((fake_bundle / relative).read_bytes(), before)
-        profile_state = {entry.role: platform.identity(entry.path) for entry in profile.layout.managed}
-        executable.write_bytes(b"updated signed-runtime fixture")
-        session = TargetSession(profile.identifier, "ws://127.0.0.1:18762", 11, 12, 13)
-        backend = unittest.mock.Mock(pid=101)
-        backend.poll.return_value = None
-        desktop = unittest.mock.Mock(pid=102, returncode=0)
-        desktop.poll.return_value = 0
-        real_popen = subprocess.Popen
-        def fake_owned_launch(command, *args, **kwargs):
-            if len(command) > 1 and command[1] == "app-server":
-                return backend
-            if command[0] == "/usr/bin/open":
-                return desktop
-            # Keep real fixture-only codesign/filesystem probes; never launch apps.
-            return real_popen(command, *args, **kwargs)
-        with patch("plura_desktop.manager.subprocess.Popen", side_effect=fake_owned_launch), patch(
-            "plura_desktop.manager.endpoint_ready", return_value=True
-        ), patch("plura_desktop.manager._terminate_owned"), patch.object(
-            platform, "supervised_desktop_pid", return_value=102
-        ):
-            supervise_target(platform, profile.identifier)
-        self.assertEqual(runtime_executable.read_bytes(), executable.read_bytes())
-        self.assertEqual(profile.load()["official_baseline"], platform.fingerprint(executable))
-        self.assertEqual(profile_state, {entry.role: platform.identity(entry.path) for entry in profile.layout.managed})
-        # An official reinstall can preserve the bytes while replacing source file metadata.
-        before_stat = executable.stat()
-        os.utime(executable, ns=(before_stat.st_atime_ns, before_stat.st_mtime_ns + 1_000_000))
-        backend = unittest.mock.Mock(pid=101)
-        backend.poll.return_value = None
-        desktop = unittest.mock.Mock(pid=102, returncode=0)
-        desktop.poll.return_value = 0
-        real_popen = subprocess.Popen
-        def fake_owned_launch(command, *args, **kwargs):
-            if len(command) > 1 and command[1] == "app-server":
-                return backend
-            if command[0] == "/usr/bin/open":
-                return desktop
-            # Keep real fixture-only codesign/filesystem probes; never launch apps.
-            return real_popen(command, *args, **kwargs)
-        with patch("plura_desktop.manager.subprocess.Popen", side_effect=fake_owned_launch), patch(
-            "plura_desktop.manager.endpoint_ready", return_value=True
-        ), patch("plura_desktop.manager._terminate_owned"), patch.object(
-            platform, "supervised_desktop_pid", return_value=102
-        ):
-            supervise_target(platform, profile.identifier)
-        self.assertEqual(runtime_executable.read_bytes(), executable.read_bytes())
-        self.assertEqual(profile_state, {entry.role: platform.identity(entry.path) for entry in profile.layout.managed})
-        profile.uninstall(True)
-        self.assertFalse(profile.meta.joinpath("runtime-apps/profile-2").exists())
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
     def test_macos_selector_self_refresh_stages_before_replacing_its_runtime_source(self):
@@ -2115,41 +1008,6 @@ class PlatformContractTests(unittest.TestCase):
         ):
             self.assertEqual(platform.running_default(), [202])
 
-    @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
-    def test_macos_resolves_current_bundled_codex_package_entrypoint(self):
-        fake_bundle = self.home / "ChatGPT.app"
-        chatgpt = fake_bundle / "Contents/MacOS/ChatGPT"
-        chatgpt.parent.mkdir(parents=True)
-        chatgpt.write_bytes(b"fixture")
-        chatgpt.chmod(0o755)
-        package_root = fake_bundle / "Contents/Resources/codex-cli"
-        entrypoint = package_root / "bin/codex"
-        entrypoint.parent.mkdir(parents=True)
-        entrypoint.write_bytes(b"#!/bin/sh\nexit 0\n")
-        entrypoint.chmod(0o755)
-        (package_root / "codex-package.json").write_text(
-            json.dumps({"layoutVersion": 1, "entrypoint": "bin/codex"}),
-            encoding="utf-8",
-        )
-        platform = MacOSPlatform(home=self.home, app_override=chatgpt)
-        self.assertEqual(platform.resolve_codex_executable(chatgpt), entrypoint.resolve())
-
-    @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
-    def test_macos_rejects_bundled_codex_entrypoint_escape(self):
-        fake_bundle = self.home / "ChatGPT.app"
-        chatgpt = fake_bundle / "Contents/MacOS/ChatGPT"
-        chatgpt.parent.mkdir(parents=True)
-        chatgpt.write_bytes(b"fixture")
-        chatgpt.chmod(0o755)
-        package_root = fake_bundle / "Contents/Resources/codex-cli"
-        package_root.mkdir(parents=True)
-        (package_root / "codex-package.json").write_text(
-            json.dumps({"layoutVersion": 1, "entrypoint": "../outside"}),
-            encoding="utf-8",
-        )
-        platform = MacOSPlatform(home=self.home, app_override=chatgpt)
-        with self.assertRaisesRegex(RuntimeError, "escapes its package root"):
-            platform.resolve_codex_executable(chatgpt)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux adapter integration test")
     def test_linux_adapter_installs_xdg_desktop_entry_with_owned_runtime(self):
@@ -2172,7 +1030,7 @@ class PlatformContractTests(unittest.TestCase):
             launcher = (runtime / "launch-profile").read_text(encoding="utf-8")
             self.assertIn("launch-target", launcher)
             self.assertIn("--target local.plura-desktop.profile2", launcher)
-            self.assertIn("--renderer-cdp", launcher)
+            self.assertNotIn("--renderer-cdp", launcher)
             self.assertTrue((profile.meta / "plura-desktop").is_file())
             self.assertEqual(profile.load()["platform"], "linux")
             profile.uninstall(True)

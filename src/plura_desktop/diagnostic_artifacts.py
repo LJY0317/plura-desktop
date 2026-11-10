@@ -233,37 +233,6 @@ def _write_bounded_incident(metadata: Path, incidents: Path, incident: str, data
     return {**artifact, "sizeBytes": len(data)}
 
 
-
-def write_runtime_diagnostic_artifact(metadata: Path, target_id: str, supervisor_pid: int, output: dict) -> dict:
-    """Default and managed runtime evidence, authorized by the exact live owner descriptor."""
-    from .runtime import descriptor_path, route_key
-    _require_owned_directory(metadata, "Runtime metadata")
-    descriptor = descriptor_path(metadata, target_id)
-    if descriptor.is_symlink() or not descriptor.is_file() or not _owned_by_current_user(descriptor):
-        raise RuntimeError("Runtime diagnostic owner is unavailable")
-    if descriptor.stat().st_size > 16 * 1024:
-        raise RuntimeError("Runtime descriptor exceeds bound")
-    owner = json.loads(descriptor.read_text(encoding="utf-8"))
-    if owner.get("targetID") != target_id or owner.get("supervisorPID") != supervisor_pid:
-        raise RuntimeError("Runtime diagnostic owner changed")
-    incident = new_incident_id()
-    artifact = {"schema": 1, "incident": incident, "targetHash": route_key(target_id),
-                "maxBytes": DIAGNOSTIC_ARTIFACT_MAX_BYTES, "retentionMaxBytes": DIAGNOSTIC_TOTAL_MAX_BYTES,
-                "retentionDays": DIAGNOSTIC_RETENTION_DAYS}
-    data = (json.dumps({**output, "artifact": artifact}, sort_keys=True, indent=2) + "\n").encode()
-    if len(data) > DIAGNOSTIC_ARTIFACT_MAX_BYTES:
-        raise RuntimeError("Runtime diagnostic exceeds bound")
-    root = metadata / "diagnostics"
-    runtime = root / "runtime"
-    target = runtime / route_key(target_id)
-    incidents = target / "incidents"
-    for directory in (root, runtime, target, incidents):
-        _ensure_private_directory(directory)
-    if any(path.name != "incidents" for path in target.iterdir()):
-        raise RuntimeError("Runtime diagnostic namespace changed")
-    return _write_bounded_incident(metadata, incidents, incident, data, artifact, DIAGNOSTIC_TOTAL_MAX_BYTES, DIAGNOSTIC_RETENTION_DAYS)
-
-
 def validate_runtime_diagnostic_tree(metadata: Path) -> Path | None:
     root = metadata / "diagnostics" / "runtime"
     if not root.exists():
