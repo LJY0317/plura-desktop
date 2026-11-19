@@ -341,6 +341,7 @@ class MacOSPlatform(DesktopPlatform):
                 )
 
         source_bundle = self._bundle_for_executable(executable)
+        source_stats = self._core_stats(executable)
         temporary_root = Path(tempfile.mkdtemp(prefix=f".profile-{layout.index}-runtime-", dir=runtime_parent))
         temporary_bundle = temporary_root / "ChatGPT.app"
         try:
@@ -357,37 +358,24 @@ class MacOSPlatform(DesktopPlatform):
             marker = {
                 "version": 1,
                 "sourceFingerprint": source_fingerprint,
-                "sourceStats": self._core_stats(executable),
+                "sourceStats": source_stats,
             }
             (temporary_root / "runtime.json").write_text(
                 json.dumps(marker, sort_keys=True, separators=(",", ":")) + "\n",
                 encoding="utf-8",
             )
 
-            backup = runtime_root.with_name(f".{runtime_root.name}.previous-{os.getpid()}")
-            if backup.exists():
-                self.ensure_no_mounts(backup)
-                shutil.rmtree(backup)
-            moved_old = False
+            if self._core_stats(executable) != source_stats:
+                raise RuntimeError("Official ChatGPT changed during profile refresh. Reopen the profile after the update.")
             if runtime_root.exists():
-                runtime_root.rename(backup)
-                moved_old = True
-            try:
+                self._exchange_paths(runtime_root, temporary_root)
+            else:
                 temporary_root.rename(runtime_root)
-            except Exception:
-                if moved_old and not runtime_root.exists() and backup.exists():
-                    backup.rename(runtime_root)
-                raise
-            if backup.exists():
-                self.ensure_no_mounts(backup)
-                shutil.rmtree(backup)
         finally:
             if temporary_root.exists():
                 self.ensure_no_mounts(temporary_root)
                 shutil.rmtree(temporary_root)
 
-        if not self._runtime_matches(layout, executable, source_fingerprint):
-            raise RuntimeError("Managed ChatGPT runtime verification failed after refresh")
         return self._profile_runtime_executable(layout)
 
     def profile_executable(

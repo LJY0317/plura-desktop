@@ -330,6 +330,31 @@ class MacSelectorIntegrityTests(unittest.TestCase):
         self.assertTrue(item["flags"]["managedRuntimeRebuilt"])
         self.assertFalse(item["flags"]["officialSourceChanged"])
 
+    def test_official_change_during_copy_preserves_the_installed_profile_runtime(self) -> None:
+        runtime = self.platform._profile_runtime_executable(self.profile.layout)
+        previous_runtime = runtime.read_bytes()
+        previous_generation = self.platform.runtime_generation(self.profile.layout)
+        previous_launcher = (self.profile.wrapper / "Contents/MacOS/launcher").read_bytes()
+        self.executable.write_bytes(b"official-update-in-progress")
+        verify = self.platform._verify_runtime_signature
+
+        def finish_official_update(bundle: Path) -> None:
+            verify(bundle)
+            if bundle.parent.name.startswith(".profile-2-runtime-"):
+                self.executable.write_bytes(b"official-update-finished")
+
+        with patch.object(self.platform, "_verify_runtime_signature", side_effect=finish_official_update):
+            with self.assertRaisesRegex(RuntimeError, "Official ChatGPT changed during profile refresh"):
+                self.profile.refresh()
+
+        self.assertEqual(b"official-update-finished", self.executable.read_bytes())
+        self.assertEqual(previous_runtime, runtime.read_bytes())
+        self.assertEqual(previous_generation, self.platform.runtime_generation(self.profile.layout))
+        self.assertEqual(previous_launcher, (self.profile.wrapper / "Contents/MacOS/launcher").read_bytes())
+        with redirect_stdout(io.StringIO()):
+            self.profile.refresh()
+        self.assertEqual(self.executable.read_bytes(), runtime.read_bytes())
+
     def test_selector_exchange_failure_is_recorded_but_original_stays_complete(self) -> None:
         launcher = self.profile.wrapper / "Contents/MacOS/launcher"
         old_launcher = launcher.read_bytes()
