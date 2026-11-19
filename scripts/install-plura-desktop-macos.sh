@@ -208,22 +208,92 @@ if [ "$RELEASE_MODE" != "release" ] && [ -z "$expected_version" ]; then
   fail "A local/unrendered installer requires --version VERSION."
 fi
 
-tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/plura-desktop-install.XXXXXX")
-staging= backup= cli_staging= diag_staging= update_staging= uninstall_staging= record_staging=
-cleanup() {
-  if [ -n "${backup:-}" ] && [ -d "$backup" ]; then
-    if [ -e "$runtime" ]; then
-      rm -rf "$backup"
-    else
-      mv "$backup" "$runtime" || true
-    fi
-  fi
-  for artifact in "$tmp_root" "${staging:-}" "${cli_staging:-}" "${diag_staging:-}" \
-    "${update_staging:-}" "${uninstall_staging:-}" "${record_staging:-}"; do
-    [ -z "$artifact" ] || rm -rf "$artifact"
-  done
+meta="$HOME/Library/Application Support/PluraDesktop"
+distribution="$meta/distribution"
+runtime="$distribution/cli-runtime"
+bin_dir="$meta/bin"
+tools_dir="$HOME/Applications/Plura Desktop Tools"
+ensure_owned_parent_directory "$HOME/Library"
+ensure_owned_parent_directory "$HOME/Library/Application Support"
+ensure_private_directory "$meta"
+ensure_private_directory "$distribution"
+ensure_private_directory "$bin_dir"
+ensure_owned_parent_directory "$HOME/Applications"
+ensure_private_directory "$tools_dir"
+
+record="$distribution/install-record"
+
+# The lock stays with the shell and its copying children without leaving a lock file.
+exec 9< "$distribution"
+/usr/bin/lockf -t 0 9 || fail "Another Plura installer is already running."
+transaction="$meta/.guided-install"
+update_path="$tools_dir/Update Plura Desktop.command"
+uninstall_path="$tools_dir/Uninstall Plura Desktop.command"
+
+guided_files() {
+  "$1" "$bin_dir/plura-desktop" cli &&
+  "$1" "$bin_dir/plura-desktop-diagnose" diagnostics &&
+  "$1" "$update_path" update &&
+  "$1" "$uninstall_path" uninstall
 }
-trap cleanup EXIT
+
+backup_guided_file() {
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    validate_replaceable_file "$1"
+    ln "$1" "$transaction/old-$2"
+  fi
+}
+
+restore_guided_file() {
+  validate_replaceable_file "$1"
+  if [ -f "$transaction/old-$2" ]; then
+    validate_replaceable_file "$transaction/old-$2"
+    [ "$1" -ef "$transaction/old-$2" ] || ln -f "$transaction/old-$2" "$1"
+  else
+    rm -f "$1"
+  fi
+}
+
+recover_guided_install() {
+  [ -e "$transaction" ] || [ -L "$transaction" ] || return 0
+  ensure_owned_parent_directory "$transaction"
+  validate_replaceable_file "$transaction/owner"
+  if [ ! -f "$transaction/owner" ]; then
+    # A crash just after mkdir can leave an empty directory, but never foreign content.
+    rmdir "$transaction"
+    return $?
+  fi
+  validate_replaceable_file "$transaction/prepared"
+  validate_replaceable_file "$transaction/committed-record"
+  if [ -f "$transaction/prepared" ] && ! [ "$record" -ef "$transaction/committed-record" ]; then
+    if [ -e "$transaction/old-runtime" ]; then
+      ensure_owned_parent_directory "$transaction/old-runtime"
+      if [ -e "$runtime" ] || [ -L "$runtime" ]; then
+        ensure_owned_parent_directory "$runtime"
+        rm -rf "$runtime" || return 1
+      fi
+      mv "$transaction/old-runtime" "$runtime" || return 1
+    elif [ ! -f "$record" ] && { [ -e "$runtime" ] || [ -L "$runtime" ]; }; then
+      ensure_owned_parent_directory "$runtime"
+      rm -rf "$runtime" || return 1
+    fi
+    guided_files restore_guided_file || return 1
+  fi
+  # Once settled, a second interruption can only leave disposable staging.
+  rm -f "$transaction/prepared" || return 1
+  for entry in downloads old-runtime old-cli old-diagnostics old-update old-uninstall \
+    new-runtime new-cli new-diagnostics new-update new-uninstall new-record committed-record; do
+    rm -rf "$transaction/$entry" || return 1
+  done
+  rm -f "$transaction/owner" && rmdir "$transaction"
+}
+
+recover_guided_install || fail "Could not recover the previous Plura installation."
+(umask 077 && mkdir "$transaction")
+trap recover_guided_install EXIT
+: > "$transaction/owner"
+tmp_root="$transaction/downloads"
+mkdir "$tmp_root"
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -316,20 +386,6 @@ APPLESCRIPT
   fi
 fi
 
-meta="$HOME/Library/Application Support/PluraDesktop"
-distribution="$meta/distribution"
-runtime="$distribution/cli-runtime"
-bin_dir="$meta/bin"
-tools_dir="$HOME/Applications/Plura Desktop Tools"
-ensure_owned_parent_directory "$HOME/Library"
-ensure_owned_parent_directory "$HOME/Library/Application Support"
-ensure_private_directory "$meta"
-ensure_private_directory "$distribution"
-ensure_private_directory "$bin_dir"
-ensure_owned_parent_directory "$HOME/Applications"
-ensure_private_directory "$tools_dir"
-
-record="$distribution/install-record"
 if [ -e "$record" ] || [ -L "$record" ]; then
   validate_replaceable_file "$record"
   record_schema=$(record_value "$record" schema)
@@ -392,9 +448,7 @@ if [ -n "$existing_control" ]; then
   done
 fi
 
-staging="$distribution/.cli-runtime-$$"
-backup="$distribution/.cli-runtime-backup-$$"
-rm -rf "$staging" "$backup"
+staging="$transaction/new-runtime"
 
 echo "Creating isolated Plura Desktop CLI runtime..."
 runtime_mode="wheel"
@@ -423,20 +477,17 @@ else
   "$staging/bin/python" -m plura_desktop --version >/dev/null || fail "Installed CLI verification failed."
 fi
 
+guided_files backup_guided_file || fail "Could not preserve the previous Plura launchers."
+: > "$transaction/prepared"
 if [ -e "$runtime" ]; then
-  [ ! -L "$runtime" ] && [ -d "$runtime" ] || fail "Existing CLI runtime is unsafe or replaced: $runtime"
-  mv "$runtime" "$backup"
+  mv "$runtime" "$transaction/old-runtime"
 fi
-if ! mv "$staging" "$runtime"; then
-  [ -d "$backup" ] && mv "$backup" "$runtime" || true
-  fail "Could not activate the new CLI runtime."
-fi
-rm -rf "$backup"
+mv "$staging" "$runtime" || fail "Could not activate the new CLI runtime."
 
 validate_replaceable_file "$bin_dir/plura-desktop"
 validate_replaceable_file "$bin_dir/plura-desktop-diagnose"
-cli_staging="$bin_dir/.plura-desktop.$$"
-diag_staging="$bin_dir/.plura-desktop-diagnose.$$"
+cli_staging="$transaction/new-cli"
+diag_staging="$transaction/new-diagnostics"
 if [ "$runtime_mode" = "standalone" ]; then
 cat > "$cli_staging" <<EOF
 #!/bin/sh
@@ -470,7 +521,7 @@ repo_is_rendered=0
 if [ "$repo_is_rendered" -eq 1 ]; then
   update_path="$tools_dir/Update Plura Desktop.command"
   validate_replaceable_file "$update_path"
-  update_staging="$tools_dir/.update.$$"
+  update_staging="$transaction/new-update"
   cat > "$update_staging" <<EOF
 #!/bin/sh
 set -eu
@@ -509,7 +560,7 @@ fi
 
 uninstall_path="$tools_dir/Uninstall Plura Desktop.command"
 validate_replaceable_file "$uninstall_path"
-uninstall_staging="$tools_dir/.uninstall.$$"
+uninstall_staging="$transaction/new-uninstall"
 cat > "$uninstall_staging" <<EOF
 #!/bin/sh
 set -eu
@@ -617,7 +668,7 @@ runtime_binary_identity=""
 if [ "$runtime_mode" = "standalone" ]; then
   runtime_binary_identity=$(identity "$runtime/plura-desktop")
 fi
-record_staging="$distribution/.install-record.$$"
+record_staging="$transaction/new-record"
 cat > "$record_staging" <<EOF
 schema=3
 version=${installed_version}
@@ -630,7 +681,9 @@ update_identity=${update_identity}
 uninstall_identity=${uninstall_identity}
 EOF
 chmod 600 "$record_staging"
-mv -f "$record_staging" "$distribution/install-record"
+ln "$record_staging" "$transaction/committed-record"
+mv -f "$record_staging" "$record"
+recover_guided_install || fail "Could not clear the completed Plura installation staging."
 
 cli="$bin_dir/plura-desktop"
 result_message="Plura Desktop CLI runtime is ready."

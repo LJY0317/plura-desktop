@@ -240,6 +240,73 @@ class ReleaseDistributionTests(unittest.TestCase):
             self.assertEqual(user_data.read_text(), "user data")
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS installer integration test")
+    def test_guided_install_recovers_after_kill_at_runtime_and_record_boundaries(self):
+        with tempfile.TemporaryDirectory(prefix="plura-release-crash-", dir=ROOT) as root:
+            home = Path(root)
+            archive = self.runtime_archive(home)
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            env = {**os.environ, "HOME": root}
+            arguments = ["/bin/sh", str(TEMPLATE), "--standalone", str(archive),
+                         "--version", "0.1.0", "--cli-only", "--standalone-sha256"]
+            subprocess.run([*arguments, digest], env=env, capture_output=True, text=True, check=True)
+            meta = home / "Library/Application Support/PluraDesktop"
+            runtime = meta / "distribution/cli-runtime"
+            record = meta / "distribution/install-record"
+            launcher = meta / "bin/plura-desktop"
+            original_ids = tuple(path.stat().st_ino for path in (runtime, record, launcher))
+            original_record = record.read_bytes()
+            user_data = home / "unrelated-data"
+            user_data.write_text("preserve")
+            shims = home / "shims"
+            shims.mkdir()
+            mv = shims / "mv"
+            mv.write_text(
+                '#!/bin/sh\n'
+                'case "$PLURA_TEST_INTERRUPT:$*" in\n'
+                ' before-record:*".guided-install/new-record "*) kill -KILL "$PPID"; exit 1 ;;\n'
+                'esac\n'
+                '/bin/mv "$@" || exit $?\n'
+                'case "$PLURA_TEST_INTERRUPT:$*" in\n'
+                ' old-runtime:*".guided-install/old-runtime") kill -KILL "$PPID" ;;\n'
+                ' after-record:*".guided-install/new-record "*) kill -KILL "$PPID" ;;\n'
+                'esac\n'
+            )
+            mv.chmod(0o700)
+            for boundary in ("old-runtime", "before-record"):
+                with self.subTest(boundary=boundary):
+                    interrupted = subprocess.run(
+                        [*arguments, digest], capture_output=True, text=True,
+                        env={**env, "PATH": f"{shims}:{env['PATH']}", "PLURA_TEST_INTERRUPT": boundary},
+                        timeout=25,
+                    )
+                    self.assertEqual(interrupted.returncode, -9, interrupted.stderr)
+                    self.assertTrue((meta / ".guided-install/old-runtime").is_dir())
+                    # Stop on a bad candidate after startup recovery, before allowing another update.
+                    recovered = subprocess.run([*arguments, "0" * 64], env=env, capture_output=True,
+                                               text=True, timeout=25)
+                    self.assertIn("checksum", recovered.stdout + recovered.stderr)
+                    self.assertFalse((meta / ".guided-install").exists())
+                    self.assertEqual(tuple(path.stat().st_ino for path in (runtime, record, launcher)), original_ids)
+                    self.assertEqual(record.read_bytes(), original_record)
+                    self.assertEqual(user_data.read_text(), "preserve")
+                    subprocess.run([str(launcher), "--version"], env=env, capture_output=True, check=True)
+            committed = subprocess.run(
+                [*arguments, digest], capture_output=True, text=True,
+                env={**env, "PATH": f"{shims}:{env['PATH']}", "PLURA_TEST_INTERRUPT": "after-record"},
+                timeout=25,
+            )
+            self.assertEqual(committed.returncode, -9, committed.stderr)
+            committed_ids = tuple(path.stat().st_ino for path in (runtime, record, launcher))
+            self.assertNotEqual(committed_ids, original_ids)
+            recovered = subprocess.run([*arguments, "0" * 64], env=env, capture_output=True,
+                                       text=True, timeout=25)
+            self.assertIn("checksum", recovered.stdout + recovered.stderr)
+            self.assertFalse((meta / ".guided-install").exists())
+            self.assertEqual(tuple(path.stat().st_ino for path in (runtime, record, launcher)), committed_ids)
+            self.assertEqual(user_data.read_text(), "preserve")
+            subprocess.run([*arguments, digest], env=env, capture_output=True, text=True, check=True)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS installer integration test")
     def test_guided_identity_survives_device_change_and_rejects_other_volume(self):
         with tempfile.TemporaryDirectory(prefix="plura-release-reboot-", dir=ROOT) as root:
             home = Path(root)
