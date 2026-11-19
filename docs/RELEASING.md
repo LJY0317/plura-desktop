@@ -43,12 +43,6 @@ Once the project exists on PyPI, the normal Python install surface may additiona
 
 ## Free Homebrew distribution
 
-The folder-runtime release changes standalone asset names to ZIPs. Prepare the tap's downloader and
-formula template for those archives, including all runtime support files, before publishing the new tag.
-Keep the currently published formula pinned to its existing immutable assets. Merge the tap transition
-after the new immutable release exists and its Apple Silicon/Intel upgrade checks pass; never replace
-assets in an already-published release or add an old-format runtime fallback.
-
 The public `LJY0317/homebrew-plura` tap is the supported no-Python macOS package-manager path while Developer ID/notarization is deferred. The formula installs the architecture-specific standalone runtime from a published immutable Plura Desktop release and verifies the exact upstream SHA-256.
 
 Formula updates are intentionally downstream of a completed Plura Desktop release. The tap's scheduled/manual `Update Plura Desktop formula` workflow finds the newest immutable semantic-version upstream release, verifies `SHA256SUMS`, recomputes the downloaded sdist/arm64/x86_64 hashes, verifies GitHub attestations and `RELEASE-METADATA.json`, then renders the formula. When an update is required, the workflow serializes update runs and tests the transition on both `macos-15` and `macos-15-intel`: it installs the currently published formula first, replaces the formula with the verified candidate, runs style/audit, upgrades to the candidate, and runs the formula test/version smoke. Only after both architectures pass does a write-scoped final job commit the formula update to tap `main`.
