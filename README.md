@@ -125,11 +125,9 @@ On macOS the install creates `~/Applications/ChatGPT Profile 2.app`, which can t
 
 ### Updating ChatGPT itself
 
-The official/default ChatGPT installation is the **only application-update authority**. Update ChatGPT from the normal/default ChatGPT app. Managed Profile 2+ macOS runtimes are disposable derived clones, not independent application installations: after the official app changes, the next cold managed-profile launch refreshes its derived runtime/selector from the official app while preserving that profile's login and conversation state. A managed profile that is already running is never killed or rewritten underneath; it follows the new official build only after a normal quit and later launch.
+On macOS, open the official ChatGPT app (Profile 1) and choose **Check for Updates** from its app menu. After it updates, quit and reopen any managed profiles you were using. Plura refreshes each profile from the official app the next time you open it and preserves its sign-in and conversations. Profiles that were closed pick up the new build when you next use them.
 
-Plura does not patch ChatGPT's update UI. On current macOS builds that expose Sparkle, managed launches use process-local Sparkle defaults to suppress scheduled automatic update checks/downloads without changing the official app or default-profile preferences. Manual upstream update UI can still exist. If an upstream self-updater nevertheless changes a managed clone, Plura treats that clone as disposable and reconciles it back to the official app before the next managed launch.
-
-**Update the official ChatGPT application from Profile 1 only.** Do not use a manual updater control that might remain visible in managed profiles. Plura checks whether a managed launcher is complete, serializes update/launch preparation, repairs only safe disposable derived code, and records privacy-limited failure diagnostics. See [macOS update recovery and diagnostics](docs/UPDATE_RECOVERY_AND_DIAGNOSTICS.ko.md).
+A managed profile may still show ChatGPT’s update menu. Use the official app’s menu for updates. See [macOS update recovery and diagnostics](docs/UPDATE_RECOVERY_AND_DIAGNOSTICS.ko.md) for details.
 
 ### Update
 

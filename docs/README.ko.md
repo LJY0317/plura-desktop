@@ -112,11 +112,9 @@ macOS에서는 `~/Applications/ChatGPT Profile 2.app`이 생성되며 이후 일
 
 ### ChatGPT 자체 업데이트
 
-공식/default ChatGPT 설치본만 **애플리케이션 업데이트의 유일한 기준**입니다. ChatGPT 자체 업데이트는 기본 ChatGPT 앱에서 진행합니다. macOS의 managed Profile 2+ runtime clone은 독립 설치본이 아니라 언제든 다시 만들 수 있는 derived runtime입니다. 공식 앱이 바뀌면 다음 managed profile cold launch에서 login/conversation state는 그대로 둔 채 공식 앱 기준으로 runtime/selector를 자동 refresh합니다. 이미 실행 중인 managed profile을 강제로 종료하거나 실행 중인 runtime을 교체하지 않으며, 사용자가 정상 종료한 뒤 다음 실행에서 새 공식 build를 따라갑니다.
+macOS에서는 공식 ChatGPT 앱(프로필 1)의 메뉴에서 **Check for Updates**를 선택하세요. 업데이트가 끝나면 사용 중이던 관리 프로필을 정상 종료한 뒤 다시 여세요. Plura는 로그인과 대화를 보존하면서 공식 앱 기준으로 갱신합니다. 닫혀 있던 프로필은 다음에 열 때 갱신됩니다.
 
-Plura는 ChatGPT의 업데이트 UI를 patch하지 않습니다. 현재 macOS build처럼 Sparkle capability가 감지되면 managed launch에만 process-local Sparkle 기본값을 전달해 예약된 자동 update check/download를 억제하며, 공식 앱이나 default profile의 환경설정은 바꾸지 않습니다. 수동 upstream update UI는 남을 수 있습니다. 그 경로로 managed clone이 변경되더라도 해당 clone은 authoritative state가 아니므로 다음 managed launch 전에 공식 앱 기준으로 폐기·재생성합니다.
-
-**ChatGPT 업데이트는 기본 프로필 1에서만 진행하세요.** 프로필 2+에 수동 업데이트 버튼이 보여도 사용하지 않습니다. 바로가기 손상, 안전한 자동 복구, 갱신 중복 실행 방지 및 개인정보를 읽지 않는 진단 방법은 [macOS 업데이트·복구 안내](UPDATE_RECOVERY_AND_DIAGNOSTICS.ko.md)에 정리했습니다.
+관리 프로필에도 업데이트 메뉴가 보일 수 있습니다. 업데이트는 공식 앱 메뉴에서 진행하세요. 자세한 내용은 [macOS 업데이트·복구 안내](UPDATE_RECOVERY_AND_DIAGNOSTICS.ko.md)를 참고하세요.
 
 ### 업데이트
 
