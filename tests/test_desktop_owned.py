@@ -1,5 +1,5 @@
 """Native ownership and profile isolation; all processes and homes are synthetic."""
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from test_safety import FakePlatform
-from plura_desktop.cli import build_parser
+from plura_desktop.cli import build_parser, main
 from plura_desktop.manager import Profile, launch_target, target_session
 from plura_desktop.platforms.linux import LinuxPlatform
 from plura_desktop.platforms.macos import MacOSPlatform
@@ -58,6 +58,20 @@ class DesktopOwnedTests(unittest.TestCase):
             self.assertEqual(result["state"], "running")
             self.assertEqual(result["desktopProcessID"], 123)
             self.assertNotIn("nativeReady", result)
+
+    def test_only_the_interactive_mac_shortcut_reports_the_correct_profile_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            platform = MacOSPlatform(home=Path(directory))
+            profile = platform.layout(3)
+            failure = RuntimeError("fixture launch failed")
+            command = ["launch-target", "--target", profile.identifier]
+            with patch("plura_desktop.cli.current_platform", return_value=platform), patch(
+                "plura_desktop.cli.launch_target", side_effect=failure,
+            ), patch.object(platform, "show_launch_error") as show_error, redirect_stderr(io.StringIO()):
+                self.assertEqual(main([*command, "--json"]), 1)
+                show_error.assert_not_called()
+                self.assertEqual(main([*command, "--profile", "3", "--activate"]), 1)
+                show_error.assert_called_once_with(profile, failure)
 
     def test_selected_profile_does_not_inspect_default_or_other_profile_state(self):
         with tempfile.TemporaryDirectory() as directory:

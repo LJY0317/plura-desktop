@@ -522,9 +522,10 @@ class MacOSPlatform(DesktopPlatform):
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
                 )
             shutil.copy2(icon, resources / "icon.icns")
+            arguments = f"launch-target --target {layout.identifier} --profile {layout.index} --activate"
             if runtime_executable is None:
                 command = f'{shlex.quote(sys.executable)} "$(dirname "$0")/../Resources/plura_desktop_cli.py"'
-                launch = f'exec {command} launch-target --target {layout.identifier} --activate'
+                launch = f'exec {command} {arguments}'
             else:
                 if not runtime_executable.is_file():
                     raise RuntimeError(f"Standalone Plura runtime executable is missing: {runtime_executable}")
@@ -532,7 +533,7 @@ class MacOSPlatform(DesktopPlatform):
                 stable = shlex.quote(str(runtime_executable))
                 launch = (
                     f'{STABLE_FROZEN_RUNTIME_ENV}={stable} exec {command} '
-                    f'launch-target --target {layout.identifier} --activate'
+                    f'{arguments}'
                 )
             launcher = (
                 "#!/bin/sh\n"

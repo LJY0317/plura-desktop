@@ -38,10 +38,14 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(os, "umask"):
         os.umask(0o077)
     args = build_parser().parse_args(argv)
+    launch_error_layout = None
     try:
         platform = current_platform(app_override=args.app)
-        if args.activate and (platform.platform_id != "macos" or args.command != "launch-target"):
-            raise ValueError("--activate requires macOS launch-target")
+        if args.activate:
+            layout = platform.layout(args.profile)
+            if platform.platform_id != "macos" or args.command != "launch-target" or args.target != layout.identifier:
+                raise ValueError("--activate requires a matching macOS managed profile and target")
+            launch_error_layout = layout
         if args.command == "targets":
             value = public_targets(platform)
             if args.json:
@@ -74,14 +78,15 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "diagnostics-status":
             profile.diagnostics_status()
         elif args.command == "launch":
+            launch_error_layout = profile.layout
             launch_target(platform, profile.identifier)
         else:
             getattr(profile, args.command)()
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as error:
         print("Error:", error, file=sys.stderr)
-        if args.command == "launch":
+        if launch_error_layout is not None:
             try:
-                profile.platform.show_launch_error(profile.layout, error)
+                platform.show_launch_error(launch_error_layout, error)
             except Exception:
                 pass
         return 1
