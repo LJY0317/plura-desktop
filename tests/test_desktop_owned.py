@@ -89,7 +89,11 @@ class DesktopOwnedTests(unittest.TestCase):
         inherited = {"CODEX_APP_SERVER_WS_URL": "ws://127.0.0.1:19999",
                      "CODEX_EXECUTABLE": "/fixture/foreign-engine",
                      "CODEX_EXECUTABLE_SHA256": "a" * 64}
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, inherited):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, inherited),
+            patch.object(MacOSPlatform, "_current_username", return_value="fixture-user"),
+        ):
             home = Path(directory)
             app = home / "ChatGPT.app/Contents/MacOS/ChatGPT"
             for adapter in (MacOSPlatform, LinuxPlatform, WindowsPlatform):
