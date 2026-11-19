@@ -13,7 +13,6 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 import uuid
 
 from ..domain import ProfileLayout
@@ -39,6 +38,8 @@ KERN_PROCARGS2 = 49
 
 
 class MacOSPlatform(DesktopPlatform):
+    _update_descriptor: int | None = None
+
     @contextmanager
     def update_guard(self, layout: ProfileLayout):
         """Non-persistent, fail-closed writer lock on owned metadata directory.
@@ -71,10 +72,11 @@ class MacOSPlatform(DesktopPlatform):
                         "retry after it finishes"
                     ) from error
                 raise
+            self._update_descriptor = descriptor
             try:
                 yield
             finally:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                self._update_descriptor = None
         finally:
             os.close(descriptor)
 
@@ -315,6 +317,21 @@ class MacOSPlatform(DesktopPlatform):
             return False
         return self.fingerprint(runtime_executable) == source_fingerprint
 
+    def _clear_update_stage(self, path: Path) -> None:
+        if self._is_linklike(path):
+            raise RuntimeError(f"Plura update staging path is unsafe: {path}")
+        if not path.exists():
+            return
+        self.assert_safe_ancestry(path)
+        if not path.is_dir() or not self.is_owned(path):
+            raise RuntimeError(f"Plura update staging path is unsafe: {path}")
+        self.ensure_no_mounts(path)
+        shutil.rmtree(path)
+
+    @staticmethod
+    def _selector_update_stage(layout: ProfileLayout) -> Path:
+        return layout.selector / ".plura-update"
+
     def prepare_profile_runtime(
         self,
         layout: ProfileLayout,
@@ -330,6 +347,9 @@ class MacOSPlatform(DesktopPlatform):
         if self._is_linklike(runtime_parent) or not runtime_parent.is_dir() or not self.is_owned(runtime_parent):
             raise RuntimeError(f"Managed runtime parent is unsafe or replaced: {runtime_parent}")
 
+        temporary_root = runtime_root.with_name(f".{runtime_root.name}.next")
+        self._clear_update_stage(temporary_root)
+        self._clear_update_stage(self._selector_update_stage(layout))
         if self._runtime_matches(layout, executable, source_fingerprint):
             return self._profile_runtime_executable(layout)
         if runtime_root.exists():
@@ -342,11 +362,13 @@ class MacOSPlatform(DesktopPlatform):
 
         source_bundle = self._bundle_for_executable(executable)
         source_stats = self._core_stats(executable)
-        temporary_root = Path(tempfile.mkdtemp(prefix=f".profile-{layout.index}-runtime-", dir=runtime_parent))
+        temporary_root.mkdir(mode=0o700)
         temporary_bundle = temporary_root / "ChatGPT.app"
         try:
             subprocess.run(
                 ["/bin/cp", "-cR", str(source_bundle), str(temporary_bundle)],
+                # If Plura is killed, the copying child retains the lock until it exits.
+                pass_fds=() if self._update_descriptor is None else (self._update_descriptor,),
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -372,9 +394,7 @@ class MacOSPlatform(DesktopPlatform):
             else:
                 temporary_root.rename(runtime_root)
         finally:
-            if temporary_root.exists():
-                self.ensure_no_mounts(temporary_root)
-                shutil.rmtree(temporary_root)
+            self._clear_update_stage(temporary_root)
 
         return self._profile_runtime_executable(layout)
 
@@ -487,12 +507,9 @@ class MacOSPlatform(DesktopPlatform):
                 raise RuntimeError(f"Managed selector Contents is unsafe or replaced: {live_contents}")
             self.ensure_no_mounts(live_contents)
 
-        staging_root = Path(
-            tempfile.mkdtemp(
-                prefix=f".{layout.selector.name}.next-",
-                dir=layout.selector.parent,
-            )
-        )
+        staging_root = self._selector_update_stage(layout)
+        self._clear_update_stage(staging_root)
+        staging_root.mkdir(mode=0o700)
         staging_contents = staging_root / "Contents"
         try:
             resources = staging_contents / "Resources"
@@ -554,11 +571,8 @@ class MacOSPlatform(DesktopPlatform):
             else:
                 staging_contents.rename(live_contents)
         finally:
-            if staging_root.exists():
-                # After a successful exchange this removes the old Contents tree now parked at
-                # the staging path. Before an exchange it removes only the incomplete candidate.
-                self.ensure_no_mounts(staging_root)
-                shutil.rmtree(staging_root)
+            # The atomic exchange parks the old Contents here, or leaves the incomplete candidate.
+            self._clear_update_stage(staging_root)
 
         if not (
             (live_contents / "MacOS/launcher").is_file()

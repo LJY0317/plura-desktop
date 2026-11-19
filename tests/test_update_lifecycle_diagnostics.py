@@ -330,6 +330,22 @@ class MacSelectorIntegrityTests(unittest.TestCase):
         self.assertTrue(item["flags"]["managedRuntimeRebuilt"])
         self.assertFalse(item["flags"]["officialSourceChanged"])
 
+    def test_next_launch_discards_interrupted_staging_without_replacing_live_code(self) -> None:
+        runtime = self.platform._profile_runtime_executable(self.profile.layout)
+        runtime_stage = runtime.parents[3].with_name(".profile-2.next")
+        selector_stage = self.profile.wrapper / ".plura-update"
+        for directory in (runtime_stage, selector_stage):
+            directory.mkdir()
+            (directory / "incomplete").write_text("interrupted")
+        generation = self.platform.runtime_generation(self.profile.layout)
+        launcher = self.profile.wrapper / "Contents/MacOS/launcher"
+        previous_launcher = launcher.read_bytes()
+        self.assertEqual(self.profile.prepare_launch(), runtime)
+        self.assertFalse(runtime_stage.exists())
+        self.assertFalse(selector_stage.exists())
+        self.assertEqual(self.platform.runtime_generation(self.profile.layout), generation)
+        self.assertEqual(launcher.read_bytes(), previous_launcher)
+
     def test_official_change_during_copy_preserves_the_installed_profile_runtime(self) -> None:
         runtime = self.platform._profile_runtime_executable(self.profile.layout)
         previous_runtime = runtime.read_bytes()
@@ -340,7 +356,7 @@ class MacSelectorIntegrityTests(unittest.TestCase):
 
         def finish_official_update(bundle: Path) -> None:
             verify(bundle)
-            if bundle.parent.name.startswith(".profile-2-runtime-"):
+            if bundle.parent.name == ".profile-2.next":
                 self.executable.write_bytes(b"official-update-finished")
 
         with patch.object(self.platform, "_verify_runtime_signature", side_effect=finish_official_update):

@@ -249,13 +249,7 @@ class Profile:
 
     def install(self) -> None:
         executable = self.platform.resolve_executable()
-        for entry in self.layout.managed:
-            self.safe(entry.path)
-            if entry.path.exists():
-                raise RuntimeError(f"Existing path preserved; install refused: {entry.path}")
         self.safe(self.meta)
-        if self.manifest.exists():
-            raise RuntimeError("Existing profile manifest preserved; install refused")
         if self.meta.exists():
             if not self.meta.is_dir() or not self.platform.is_owned(self.meta):
                 raise RuntimeError("Expected an owned metadata directory")
@@ -263,6 +257,17 @@ class Profile:
             self._ensure_parent(self.meta)
             self.meta.mkdir(mode=0o700)
 
+        with self.platform.update_guard(self.layout):
+            self._install_under_guard(executable)
+        print(f"Installed Profile {self.index}: {self.layout.selector}")
+
+    def _install_under_guard(self, executable: Path) -> None:
+        for entry in self.layout.managed:
+            self.safe(entry.path)
+            if entry.path.exists():
+                raise RuntimeError(f"Existing path preserved; install refused: {entry.path}")
+        if self.manifest.exists():
+            raise RuntimeError("Existing profile manifest preserved; install refused")
         baseline = self.platform.fingerprint(executable)
         manifest = self._new_manifest(executable, baseline)
         self.save(manifest)
@@ -291,7 +296,6 @@ class Profile:
         manifest["ready"] = True
         self.save(manifest)
         self.load()
-        print(f"Installed Profile {self.index}: {self.layout.selector}")
 
     def refresh(self) -> None:
         receipt = UpdateLifecycleReceipt(self.platform, self.layout, "refresh")
