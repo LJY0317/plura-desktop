@@ -685,13 +685,20 @@ def _target_executable(platform: DesktopPlatform, target: dict[str, Any]) -> Pat
     return platform.profile_process_executable(profile.layout, source)
 
 
+def _target_desktop_pid(platform: DesktopPlatform, target: dict[str, Any], executable: Path) -> int | None:
+    if target["id"] == "default":
+        return platform.desktop_process_id(executable, user_data=platform.default_user_data(),
+                                           codex_home=platform.default_codex_home())
+    layout = platform.layout(target["profileIndex"])
+    return platform.desktop_process_id(executable, user_data=layout.user_data, codex_home=layout.codex_home)
+
+
 def target_session(platform: DesktopPlatform, target_id: str) -> dict[str, Any]:
     target = _target(platform, target_id)
     value = {"contractVersion": 2, "targetID": target_id, "state": target["state"],
              "backendPolicy": "official-desktop-owned"}
     if target["state"] == "running":
-        data = platform.default_user_data() if target_id == "default" else platform.layout(target["profileIndex"]).user_data
-        pid = platform.desktop_process_id(_target_executable(platform, target), user_data=data)
+        pid = _target_desktop_pid(platform, target, _target_executable(platform, target))
         if pid is not None:
             value["desktopProcessID"] = pid
     return value
@@ -726,8 +733,7 @@ def quit_target(platform: DesktopPlatform, target_id: str, *,
     if not isinstance(pid, int) or pid <= 0:
         raise RuntimeError(f"Exact desktop process identity is unavailable for target: {target_id}")
     executable = _target_executable(platform, target)
-    data = platform.default_user_data() if target_id == "default" else platform.layout(target["profileIndex"]).user_data
-    if platform.desktop_process_id(executable, user_data=data) != pid:
+    if _target_desktop_pid(platform, target, executable) != pid:
         raise RuntimeError(f"Desktop process identity is ambiguous or changed for target: {target_id}")
     platform.request_desktop_quit(executable, pid)
     deadline = time.monotonic() + timeout

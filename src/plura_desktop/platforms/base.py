@@ -95,7 +95,8 @@ class DesktopPlatform(ABC):
             env.pop(key, None)
         return DesktopLaunch(tuple(command), env, self.home)
 
-    def desktop_process_id(self, executable: Path, *, user_data: Path | None = None) -> int | None:
+    def desktop_process_id(self, executable: Path, *,
+                           user_data: Path | None = None, codex_home: Path | None = None) -> int | None:
         """Return the top-level desktop process for one exact app executable when observable.
 
         This is optional for platform adapters and identifies an existing app for normal

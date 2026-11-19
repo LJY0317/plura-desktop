@@ -59,15 +59,18 @@ class ActualLaunchServicesIdentityTests(unittest.TestCase):
                     )
                     executables.append(executable)
                     adapters.append(MacOSPlatform(home=root, app_override=executable))
+                    environment = os.environ.copy()
+                    environment.pop("CODEX_HOME", None)
+                    environment.pop("CODEX_ELECTRON_USER_DATA_PATH", None)
                     waiters.append(subprocess.Popen(
                         ["/usr/bin/open", "-n", "-W", "-a", str(bundle)],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     ))
                 pids = [None, None]
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
                     pids = [
-                        adapter.desktop_process_id(executable)
+                        adapter.desktop_process_id(executable, user_data=adapter.default_user_data())
                         for adapter, executable in zip(adapters, executables)
                     ]
                     if all(pids):

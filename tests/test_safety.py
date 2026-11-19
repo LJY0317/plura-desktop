@@ -94,7 +94,7 @@ class FakePlatform(DesktopPlatform):
     def launch_default(self, executable):
         self.default_launched = True
 
-    def desktop_process_id(self, executable, *, user_data=None):
+    def desktop_process_id(self, executable, *, user_data=None, codex_home=None):
         return self.desktop_process_ids.get(str(executable))
 
     def request_desktop_quit(self, executable, desktop_pid):
@@ -988,25 +988,33 @@ class PlatformContractTests(unittest.TestCase):
         self.assertNotIn("-SUAutomaticallyUpdate", command_without_sparkle)
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS adapter integration test")
-    def test_macos_running_default_does_not_match_managed_profile_prefix(self):
-        fake_bundle = self.home / "ChatGPT.app"
-        executable = fake_bundle / "Contents/MacOS/ChatGPT"
-        executable.parent.mkdir(parents=True)
-        executable.write_bytes(b"fixture")
-        executable.chmod(0o755)
+    def test_macos_running_default_matches_finder_app_and_excludes_wrong_profile_and_helpers(self):
+        executable = self.home / "ChatGPT.app/Contents/MacOS/ChatGPT"
         platform = MacOSPlatform(home=self.home, app_override=executable)
-        default_marker = "--user-data-dir=" + str(platform.default_user_data())
-        managed_marker = default_marker + "-Profile2"
+        managed = platform.layout(2)
+        managed_executable = platform._profile_runtime_executable(managed)
         rows = "\n".join((
-            f"101 {executable} {managed_marker}",
-            f"202 {executable} {default_marker}",
-            f"303 {executable} {default_marker}-Other",
+            f"101 {executable}",
+            f"202 {executable}",
+            f"303 {executable}",
+            f"404 {managed_executable}",
+            f"505 {executable} Helper",
         ))
-        with patch(
-            "plura_desktop.platforms.macos.subprocess.check_output",
-            return_value=rows,
+        settings = {
+            101: ([], managed.codex_home),  # Official executable started from profile 2.
+            202: ([], None),  # Finder launch has no explicit profile arguments.
+            303: ([managed.user_data], None),
+            404: ([managed.user_data], managed.codex_home),
+        }
+        with patch("plura_desktop.platforms.macos.subprocess.check_output", return_value=rows), patch.object(
+            platform, "_desktop_settings", side_effect=lambda pid, executable: settings[pid],
         ):
             self.assertEqual(platform.running_default(), [202])
+            self.assertEqual(platform.desktop_process_id(executable, user_data=platform.default_user_data()), 202)
+            self.assertEqual(platform.running(managed), [404])
+            self.assertEqual(platform.desktop_process_id(
+                managed_executable, user_data=managed.user_data, codex_home=managed.codex_home,
+            ), 404)
 
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux adapter integration test")

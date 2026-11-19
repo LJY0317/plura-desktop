@@ -8,9 +8,9 @@ import json
 import os
 from pathlib import Path
 import plistlib
-import re
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -34,6 +34,8 @@ TOOL_LIFECYCLE_DIAGNOSTIC_RUST_LOG = (
     "codex_core::session::world_state=trace"
 )
 RENAME_SWAP = 0x00000002
+CTL_KERN = 1
+KERN_PROCARGS2 = 49
 
 
 class MacOSPlatform(DesktopPlatform):
@@ -187,16 +189,6 @@ class MacOSPlatform(DesktopPlatform):
         if renamex_np(os.fsencode(left), os.fsencode(right), RENAME_SWAP) != 0:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error), f"{left} <-> {right}")
-
-    @staticmethod
-    def _command_has_exact_argument(command: str, argument: str) -> bool:
-        """Match one exact argv-shaped token in `ps ... args=` output.
-
-        macOS `ps` flattens argv into a display string and does not preserve a machine-readable
-        delimiter. Requiring whitespace/start before the argument and whitespace/end after it keeps
-        the profile-1 marker `.../Codex` from matching managed paths such as `.../Codex-Profile2`.
-        """
-        return re.search(r"(?:^|\s)" + re.escape(argument) + r"(?=$|\s)", command) is not None
 
     platform_id = "macos"
 
@@ -586,51 +578,79 @@ class MacOSPlatform(DesktopPlatform):
         ):
             raise RuntimeError("Managed selector validation failed after atomic refresh")
 
-    def running(self, layout: ProfileLayout) -> list[int]:
+    @staticmethod
+    def _desktop_settings(pid: int, executable: Path) -> tuple[list[Path], Path | None] | None:
+        # Darwin exposes NUL-delimited argv and environment. Do not use flattened ps
+        # arguments to distinguish paths with spaces, or print the process environment.
+        libc = ctypes.CDLL(None, use_errno=True)
+        mib = (ctypes.c_int * 3)(CTL_KERN, KERN_PROCARGS2, pid)
+        size = ctypes.c_size_t()
+        if libc.sysctl(mib, len(mib), None, ctypes.byref(size), None, 0) != 0:
+            error = ctypes.get_errno()
+            if error == errno.ESRCH:
+                return None
+            raise OSError(error, "Unable to inspect ChatGPT process")
+        buffer = ctypes.create_string_buffer(size.value)
+        if libc.sysctl(mib, len(mib), buffer, ctypes.byref(size), None, 0) != 0:
+            error = ctypes.get_errno()
+            if error == errno.ESRCH:
+                return None
+            raise OSError(error, "Unable to read ChatGPT launch settings")
+        count, = struct.unpack_from("i", buffer)
+        process_path, _, payload = buffer.raw[struct.calcsize("i"):size.value].partition(b"\0")
+        if Path(os.fsdecode(process_path)).resolve() != executable.resolve():
+            return None  # Process exited or changed since enumeration.
+        fields = payload.lstrip(b"\0").split(b"\0")
+        paths = [Path(os.fsdecode(arg.removeprefix(b"--user-data-dir=")))
+                 for arg in fields[:count] if arg.startswith(b"--user-data-dir=")]
+        home = None
+        for field in fields[count:]:
+            key, _, value = field.partition(b"=")
+            if key == b"CODEX_ELECTRON_USER_DATA_PATH":
+                paths.append(Path(os.fsdecode(value)))
+            elif key == b"CODEX_HOME":
+                home = Path(os.fsdecode(value))
+        return paths, home
+
+    def _desktop_pids(self, executable: Path, user_data: Path | None = None,
+                      codex_home: Path | None = None) -> list[int]:
         try:
-            rows = subprocess.check_output(["ps", "-axo", "pid=,args="], text=True)
-        except subprocess.SubprocessError as error:
-            raise RuntimeError("Unable to inspect running profile processes") from error
-        marker = "--user-data-dir=" + str(layout.user_data)
-        return [
-            int(row.strip().split(None, 1)[0])
-            for row in rows.splitlines()
-            if self._command_has_exact_argument(row, marker)
-        ]
+            rows = subprocess.check_output(["ps", "-xww", "-o", "pid=,comm="], text=True)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeError("Unable to inspect running ChatGPT applications") from error
+        expected = {str(executable), str(executable.resolve())}
+        matches = []
+        for row in rows.splitlines():
+            pid, command = row.strip().split(None, 1)
+            if command not in expected:
+                continue
+            if user_data is not None:
+                settings = self._desktop_settings(int(pid), executable)
+                if settings is None:
+                    continue
+                paths, process_home = settings
+                default_home = self.default_codex_home()
+                expected_home = codex_home or default_home
+                default = user_data == self.default_user_data() and expected_home == default_home
+                if (process_home or default_home).resolve() != expected_home.resolve():
+                    continue
+                if (not paths and not default) or any(path.resolve() != user_data.resolve() for path in paths):
+                    continue
+            matches.append(int(pid))
+        return matches
+
+    def running(self, layout: ProfileLayout) -> list[int]:
+        return self._desktop_pids(self._profile_runtime_executable(layout), layout.user_data, layout.codex_home)
 
     def default_user_data(self) -> Path:
         return self.home / "Library/Application Support/Codex"
 
     def running_default(self) -> list[int]:
-        try:
-            rows = subprocess.check_output(["ps", "-axo", "pid=,args="], text=True)
-        except subprocess.SubprocessError as error:
-            raise RuntimeError("Unable to inspect default profile processes") from error
-        marker = "--user-data-dir=" + str(self.default_user_data())
-        return [
-            int(row.strip().split(None, 1)[0])
-            for row in rows.splitlines()
-            if self._command_has_exact_argument(row, marker)
-        ]
+        return self._desktop_pids(self.app_override or DEFAULT_EXECUTABLE, self.default_user_data())
 
-    def desktop_process_id(self, executable: Path, *, user_data: Path | None = None) -> int | None:
-        try:
-            rows = subprocess.check_output(["ps", "-axo", "pid=,ppid=,args="], text=True)
-        except subprocess.SubprocessError as error:
-            raise RuntimeError("Unable to inspect ChatGPT desktop process identity") from error
-        # Finder/LaunchServices may canonicalize /var/... to /private/var/...
-        # for exactly the same executable. Never match by bundle ID alone.
-        expected_paths = {str(executable), str(executable.resolve())}
-        matches: list[int] = []
-        for row in rows.splitlines():
-            stripped = row.strip()
-            parts = stripped.split(None, 2)
-            if len(parts) != 3 or not parts[0].isdigit():
-                continue
-            command = parts[2]
-            if any(command == expected or command.startswith(expected + " ") for expected in expected_paths):
-                if user_data is None or self._command_has_exact_argument(row, "--user-data-dir=" + str(user_data)):
-                    matches.append(int(parts[0]))
+    def desktop_process_id(self, executable: Path, *,
+                           user_data: Path | None = None, codex_home: Path | None = None) -> int | None:
+        matches = self._desktop_pids(executable, user_data, codex_home)
         return matches[0] if len(matches) == 1 else None
 
     def request_desktop_quit(self, executable: Path, desktop_pid: int) -> None:
