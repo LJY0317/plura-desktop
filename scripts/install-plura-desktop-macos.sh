@@ -526,8 +526,26 @@ if [ "$repo_is_rendered" -eq 1 ]; then
 #!/bin/sh
 set -eu
 echo "Updating Plura Desktop from the latest published GitHub Release..."
-tmp=\$(mktemp -d "\${TMPDIR:-/tmp}/plura-desktop-update.XXXXXX")
-trap 'rm -rf "\$tmp"' EXIT
+tools="${tools_dir}"
+if [ -L "\$tools" ] || [ ! -d "\$tools" ] || [ "\$(stat -f '%u' "\$tools")" != "\$(id -u)" ]; then
+  echo "Plura Desktop Tools is missing or has changed." >&2
+  exit 1
+fi
+exec 8< "\$tools"
+/usr/bin/lockf -t 0 8 || { echo "Another Plura update download is running." >&2; exit 1; }
+tmp="\$tools/.update-download"
+cleanup_download() {
+  if [ -e "\$tmp" ] || [ -L "\$tmp" ]; then
+    if [ -L "\$tmp" ] || [ ! -d "\$tmp" ] || [ "\$(stat -f '%u' "\$tmp")" != "\$(id -u)" ]; then
+      echo "Plura update download folder has changed." >&2
+      return 1
+    fi
+    rm -f "\$tmp/releases.json" "\$tmp/install.sh" && rmdir "\$tmp"
+  fi
+}
+cleanup_download
+(umask 077 && mkdir "\$tmp")
+trap cleanup_download EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -548,6 +566,9 @@ curl -fL --retry 3 --proto '=https' --tlsv1.2 \
   "https://github.com/${RELEASE_REPOSITORY}/releases/download/\$tag/install-plura-desktop-macos.sh"
 /bin/sh -n "\$tmp/install.sh"
 /bin/sh "\$tmp/install.sh"
+cleanup_download
+trap - EXIT
+exec 8<&-
 if [ -t 0 ]; then
   echo
   echo "Update finished. Press Return to close."

@@ -205,6 +205,63 @@ class ReleaseDistributionTests(unittest.TestCase):
         self.assertIn("if [ -t 0 ]; then", source)
         self.assertIn('echo "Update finished. Press Return to close."', source)
 
+    @unittest.skipUnless(sys.platform == "darwin", "macOS installer integration test")
+    def test_guided_updater_recovers_an_interrupted_installer_download(self):
+        with tempfile.TemporaryDirectory(prefix="plura-release-download-", dir=ROOT) as root:
+            home = Path(root)
+            archive = self.runtime_archive(home)
+            rendered = home / "installer.sh"
+            rendered.write_text(TEMPLATE.read_text().replace("@@PLURA_RELEASE_MODE@@", "release"))
+            env = {**os.environ, "HOME": root}
+            subprocess.run(
+                ["/bin/sh", str(rendered), "--standalone", str(archive), "--version", "0.1.0",
+                 "--standalone-sha256", hashlib.sha256(archive.read_bytes()).hexdigest(), "--cli-only"],
+                env=env, capture_output=True, text=True, check=True,
+            )
+            tools = home / "Applications/Plura Desktop Tools"
+            updater = tools / "Update Plura Desktop.command"
+            staging = tools / ".update-download"
+            unrelated = tools / ".keep"
+            unrelated.write_text("preserve")
+            shims = home / "shims"
+            shims.mkdir()
+            curl = shims / "curl"
+            curl.write_text(r'''#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then output=$2; break; fi
+  shift
+done
+case "$output" in
+  */releases.json)
+    [ ! -e "$(dirname "$output")/install.sh" ] || exit 31
+    printf '[{"tag_name":"v0.1.1"}]\n' > "$output"
+    ;;
+  */install.sh)
+    if [ "${PLURA_TEST_INTERRUPT:-}" = 1 ]; then
+      printf 'partial! (\n' > "$output"
+      kill -KILL "$PPID"
+      exit 1
+    fi
+    printf '#!/bin/sh\ntouch "$HOME/fixture-applied"\n' > "$output"
+    ;;
+  *) exit 32 ;;
+esac
+''')
+            curl.chmod(0o700)
+            env["PATH"] = f"{shims}:{env['PATH']}"
+            killed = subprocess.run(
+                ["/bin/sh", str(updater)], env={**env, "PLURA_TEST_INTERRUPT": "1"},
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(killed.returncode, -9, killed.stderr)
+            self.assertTrue((staging / "install.sh").is_file())
+            subprocess.run(
+                ["/bin/sh", str(updater)], env=env, capture_output=True, text=True, check=True, timeout=15,
+            )
+            self.assertTrue((home / "fixture-applied").exists())
+            self.assertFalse(staging.exists())
+            self.assertEqual(unrelated.read_text(), "preserve")
+
     @staticmethod
     def runtime_archive(home: Path) -> Path:
         source = home / "standalone.c"
