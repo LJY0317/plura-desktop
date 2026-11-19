@@ -209,10 +209,24 @@ if [ "$RELEASE_MODE" != "release" ] && [ -z "$expected_version" ]; then
 fi
 
 tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/plura-desktop-install.XXXXXX")
+staging= backup= cli_staging= diag_staging= update_staging= uninstall_staging= record_staging=
 cleanup() {
-  rm -rf "$tmp_root"
+  if [ -n "${backup:-}" ] && [ -d "$backup" ]; then
+    if [ -e "$runtime" ]; then
+      rm -rf "$backup"
+    else
+      mv "$backup" "$runtime" || true
+    fi
+  fi
+  for artifact in "$tmp_root" "${staging:-}" "${cli_staging:-}" "${diag_staging:-}" \
+    "${update_staging:-}" "${uninstall_staging:-}" "${record_staging:-}"; do
+    [ -z "$artifact" ] || rm -rf "$artifact"
+  done
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 machine_arch=$(uname -m)
 release_standalone_name=""
@@ -462,7 +476,10 @@ if [ "$repo_is_rendered" -eq 1 ]; then
 set -eu
 echo "Updating Plura Desktop from the latest published GitHub Release..."
 tmp=\$(mktemp -d "\${TMPDIR:-/tmp}/plura-desktop-update.XXXXXX")
-trap 'rm -rf "\$tmp"' EXIT HUP INT TERM
+trap 'rm -rf "\$tmp"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 curl -fL --retry 3 --proto '=https' --tlsv1.2 \
   -H 'Accept: application/vnd.github+json' \
   -o "\$tmp/releases.json" \
