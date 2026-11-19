@@ -47,9 +47,14 @@ class DesktopOwnedTests(unittest.TestCase):
             platform = FakePlatform(home, app)
             platform.default_running_pids = [123]
             platform.desktop_process_ids[str(platform.resolve_executable())] = 123
-            with patch.object(platform, "launch_default") as launch:
+            with patch.object(platform, "launch_default") as launch, patch.object(
+                platform, "request_desktop_activation",
+            ) as activate:
                 result = launch_target(platform, "default")
+                activate.assert_not_called()
+                self.assertEqual(launch_target(platform, "default", activate=True), result)
             launch.assert_not_called()
+            activate.assert_called_once_with(platform.resolve_executable(), 123)
             self.assertEqual(result["state"], "running")
             self.assertEqual(result["desktopProcessID"], 123)
             self.assertNotIn("nativeReady", result)

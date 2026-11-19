@@ -524,7 +524,7 @@ class MacOSPlatform(DesktopPlatform):
             shutil.copy2(icon, resources / "icon.icns")
             if runtime_executable is None:
                 command = f'{shlex.quote(sys.executable)} "$(dirname "$0")/../Resources/plura_desktop_cli.py"'
-                launch = f'exec {command} launch-target --target {layout.identifier}'
+                launch = f'exec {command} launch-target --target {layout.identifier} --activate'
             else:
                 if not runtime_executable.is_file():
                     raise RuntimeError(f"Standalone Plura runtime executable is missing: {runtime_executable}")
@@ -532,7 +532,7 @@ class MacOSPlatform(DesktopPlatform):
                 stable = shlex.quote(str(runtime_executable))
                 launch = (
                     f'{STABLE_FROZEN_RUNTIME_ENV}={stable} exec {command} '
-                    f'launch-target --target {layout.identifier}'
+                    f'launch-target --target {layout.identifier} --activate'
                 )
             launcher = (
                 "#!/bin/sh\n"
@@ -654,9 +654,16 @@ class MacOSPlatform(DesktopPlatform):
         return matches[0] if len(matches) == 1 else None
 
     def request_desktop_quit(self, executable: Path, desktop_pid: int) -> None:
-        # Profiles 1/2 may share an upstream bundle ID. Recheck the exact
-        # executable path inside the AppKit process before requesting a
-        # *normal*, PID-specific termination; never kill by bundle/name.
+        self._request_desktop_action(executable, desktop_pid, "quit", "app.terminate", "normal_quit_requested")
+
+    def request_desktop_activation(self, executable: Path, desktop_pid: int) -> None:
+        self._request_desktop_action(
+            executable, desktop_pid, "activation", "app.activateWithOptions(1)", "activation_requested",
+        )
+
+    def _request_desktop_action(self, executable: Path, desktop_pid: int, label: str,
+                                action: str, receipt: str) -> None:
+        # The profiles share a bundle ID. Verify the exact executable before acting on a PID.
         allowed_paths = sorted({str(executable), str(executable.resolve())})
         script = (
             'ObjC.import("AppKit");'
@@ -670,8 +677,8 @@ class MacOSPlatform(DesktopPlatform):
             'var canonical=allowed.map(function(p){return ObjC.unwrap('
             '$.NSString.stringWithString(p).stringByResolvingSymlinksInPath);});'
             'if(canonical.indexOf(actual)<0)throw Error("target_changed");'
-            'if(!app.terminate)throw Error("quit_refused");'
-            '"normal_quit_requested";'
+            f'if(!{action})throw Error("action_refused");'
+            f'{json.dumps(receipt)};'
         )
         try:
             result = subprocess.run(
@@ -683,10 +690,10 @@ class MacOSPlatform(DesktopPlatform):
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as error:
-            raise RuntimeError("Unable to request normal ChatGPT quit") from error
-        if result.returncode != 0 or result.stdout.strip() != "normal_quit_requested":
+            raise RuntimeError(f"Unable to request ChatGPT {label}") from error
+        if result.returncode != 0 or result.stdout.strip() != receipt:
             # Do not echo JXA's raw stderr; it may contain local user paths.
-            raise RuntimeError("Exact-PID ChatGPT normal quit request failed or was refused")
+            raise RuntimeError(f"Exact-PID ChatGPT {label} request failed or was refused")
 
     def sanitized_environment(self, layout: ProfileLayout) -> dict[str, str]:
         username = self._current_username()

@@ -27,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target", help="Target ID from targets --json")
     parser.add_argument("--expected-desktop-pid", type=int,
                         help="For quit-target, require the exact Desktop PID observed before confirmation")
+    parser.add_argument("--activate", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--app", help="Official ChatGPT executable path")
     parser.add_argument("--yes", action="store_true", help="Apply uninstall; default is dry run")
     parser.add_argument("--json", action="store_true", help="Emit the public version 2 contract")
@@ -39,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         platform = current_platform(app_override=args.app)
+        if args.activate and (platform.platform_id != "macos" or args.command != "launch-target"):
+            raise ValueError("--activate requires macOS launch-target")
         if args.command == "targets":
             value = public_targets(platform)
             if args.json:
@@ -52,9 +55,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(f"{args.command} requires --target")
             if args.command == "quit-target":
                 value = quit_target(platform, args.target, expected_desktop_pid=args.expected_desktop_pid)
+            elif args.command == "launch-target":
+                value = launch_target(platform, args.target, activate=args.activate)
             else:
-                action = launch_target if args.command == "launch-target" else target_session
-                value = action(platform, args.target)
+                value = target_session(platform, args.target)
             if args.json:
                 print(json.dumps(value, indent=2, sort_keys=True))
             else:

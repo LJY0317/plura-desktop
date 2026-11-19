@@ -105,6 +105,9 @@ class DesktopPlatform(ABC):
         return None
 
 
+    def request_desktop_activation(self, executable: Path, desktop_pid: int) -> None:
+        raise RuntimeError(f"Desktop activation is not supported on {self.platform_id}")
+
     def request_desktop_quit(self, executable: Path, desktop_pid: int) -> None:
         """Ask one exact desktop process to quit through the platform's normal application lifecycle.
 

@@ -839,6 +839,7 @@ class PlatformContractTests(unittest.TestCase):
             launcher = (profile.wrapper / "Contents/MacOS/launcher").read_text(encoding="utf-8")
             self.assertIn(str(standalone), launcher)
             self.assertIn(STABLE_FROZEN_RUNTIME_ENV, launcher)
+            self.assertIn(f"launch-target --target {profile.identifier} --activate", launcher)
             self.assertNotIn("plura_desktop_cli.py", launcher)
             resources = profile.wrapper / "Contents/Resources"
             self.assertFalse((resources / "plura_desktop_cli.py").exists())

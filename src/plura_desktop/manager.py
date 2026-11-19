@@ -704,10 +704,16 @@ def target_session(platform: DesktopPlatform, target_id: str) -> dict[str, Any]:
     return value
 
 
-def launch_target(platform: DesktopPlatform, target_id: str) -> dict[str, Any]:
+def launch_target(platform: DesktopPlatform, target_id: str, *, activate: bool = False) -> dict[str, Any]:
     target = _target(platform, target_id)
     if target["state"] == "running":
-        return target_session(platform, target_id)
+        session = target_session(platform, target_id)
+        if activate:
+            pid = session.get("desktopProcessID")
+            if pid is None:
+                raise RuntimeError(f"Exact desktop process identity is unavailable for target: {target_id}")
+            platform.request_desktop_activation(_target_executable(platform, target), pid)
+        return session
     if target["state"] != "stopped":
         raise RuntimeError(f"Target state is invalid: {target_id}")
     if target_id == "default":
