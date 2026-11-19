@@ -21,7 +21,7 @@ v1 routed app-server integrations are no longer supported. Profile data is prese
 
 ## Quick start
 
-The new app-owned execution path has passed an isolated real-app startup/normal-quit probe on Apple Silicon macOS. Signed-in Native/browser acceptance and Intel, Windows and Linux real-app validation remain release gates. Earlier full E2E results apply to earlier releases.
+For current platform coverage, see [Platform support and verification](#platform-support-and-verification).
 
 When GitHub Releases contains the suffix-free **`Plura-Desktop-VERSION-macOS.dmg`**, that notarized/stapled DMG is the recommended macOS install. Until then, **Homebrew is the simplest supported macOS install path** and does not require a separate Python environment. The source/package path remains available as the portable fallback. Do not treat `-unsigned.dmg` or `-signed.dmg` artifacts as the normal consumer installer.
 
@@ -251,12 +251,10 @@ There is currently no Plura Desktop background cache, telemetry store, or rollin
 
 ## Platform support and verification
 
-- **macOS Apple Silicon:** previous releases completed signed-in official-app E2E. The new app-owned launch has passed an isolated real-app startup/normal-quit probe; signed-in Native/browser acceptance is still pending. The official `/Applications/ChatGPT.app` remains read-only and is the sole application-update authority. Managed profiles launch from a byte-identical, still-validly-signed APFS copy-on-write runtime clone under the launcher metadata directory; the clone is disposable derived code, not profile state, and is reconciled to the official app on the next cold launch after an official update or managed-clone mutation.
-- **macOS Intel:** the standalone runtime is built and smoke-tested on a native Intel GitHub runner, but the current official ChatGPT app has not completed this repository's full Intel real-app verification flow yet.
-- **Windows:** lifecycle, path layout, selector generation, sanitized environment, and process-ownership adapter are covered by CI. A real official-app launch has not yet been verified on a Windows machine in this repository.
-- **Linux:** shared lifecycle and isolated launch construction are covered by fixtures. The Xvfb workflow has been updated for app-owned execution; its current real-package run and the full signed-in lifecycle remain release gates.
-
-Windows still requires real-machine official-app evidence before its platform-specific launch assumptions are treated as proven. Linux now has official-package launch smoke evidence in addition to the shared CI contract, but remains short of the full signed-in real-user verification flow. The common core does not add fallback behavior when an executable or process contract is unknown.
+- **macOS Apple Silicon:** Verified an upgrade from Plura 0.1.19 to 0.1.20, opening Profile 2 from its shortcut, and bringing the existing window forward. The official app owns the Native engine. Full signed-in Native app/browser acceptance remains open for this launch path.
+- **macOS Intel:** The x86_64 runtime passed a local Rosetta smoke test. That covers packaging and CLI execution. The official ChatGPT app lifecycle on Intel hardware remains unverified for this launch path.
+- **Windows:** Lifecycle, selector, environment, and process-ownership tests passed in CI. A real official ChatGPT app launch remains unverified.
+- **Linux:** The official package passed discovery, managed install/uninstall, and selector launch under Xvfb. The full signed-in lifecycle remains unverified.
 
 The exact real-app release gate is documented in [docs/PLATFORM_VERIFICATION.md](docs/PLATFORM_VERIFICATION.md).
 

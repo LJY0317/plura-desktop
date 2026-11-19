@@ -13,7 +13,7 @@
 
 ## 빠른 시작
 
-이전 릴리스의 Apple Silicon macOS 로그인 포함 E2E와 새 실행 경로의 검증은 구분합니다. 새 경로는 격리된 실제 macOS 앱에서 공식 앱 소유 Native 엔진 생성·정상 종료까지 확인했습니다. 로그인 상태의 Native/browser 도구 실수락, Intel·Windows·Linux 공식 앱 E2E는 별도 배포 게이트입니다. Linux Xvfb CI도 새 경로로 갱신했으며 실행 결과를 확인해야 합니다.
+현재 플랫폼별 검증 범위는 [플랫폼 검증](#플랫폼-검증)을 참고하세요.
 
 GitHub Releases에 suffix 없는 **`Plura-Desktop-VERSION-macOS.dmg`**가 실제로 있을 때 그 notarized/stapled DMG가 macOS 권장 설치 경로입니다. 그 전까지는 **Homebrew가 가장 간단한 지원 macOS 설치 경로**이며 별도 Python 환경이 필요하지 않습니다. source/package 경로도 portable fallback으로 유지합니다. `-unsigned.dmg`나 `-signed.dmg`를 일반 사용자용 installer로 취급하지 않습니다.
 
@@ -210,9 +210,14 @@ Linux는 XDG 환경 변수가 없으면 `~/.local/share`, `~/.config`, `~/.local
 
 `PluraDesktop` metadata 내부의 역할도 고정합니다. `profile-N-install-manifest.json`은 ownership/provenance state, `control-runtime`은 refresh 가능한 설치 코드, `runtime-sessions`는 live runtime용 임시 claim/descriptor, macOS `runtime-apps/profile-N` 및 Windows/Linux `profile-N-runtime`은 재생성 가능한 derived runtime입니다. 선택적으로 저장하는 진단 증거는 `diagnostics/profile-N/incidents` 아래에만 두며 프로필·runtime 진단 전체 32MiB/30일, incident당 최대 256 KiB로 제한합니다. macOS 간편 installer를 사용한 경우 `distribution/cli-runtime`과 `bin`은 installer-owned standalone CLI runtime/launcher이며 full uninstall 도구가 managed profile 제거 후 함께 정리합니다. 별도 background cache/telemetry/rolling product log는 만들지 않습니다.
 
-새 경로는 Apple Silicon macOS의 격리된 실제 앱 실행·정상 종료까지 확인했습니다. 원본 앱은 read-only이고 프로필의 로그인·대화 경로는 보존합니다. 로그인 포함 Native/browser 실수락과 Intel·Windows·Linux 공식 앱 검증은 새 배포 전 확인해야 합니다. 이전 릴리스의 E2E 결과를 새 경로 전체의 검증으로 간주하지 않습니다.
+## 플랫폼 검증
 
-Windows/Linux를 실제 지원으로 표시하기 위한 정확한 실기기 gate는 [PLATFORM_VERIFICATION.md](PLATFORM_VERIFICATION.md)에 고정합니다.
+- **macOS Apple Silicon:** Plura 0.1.19에서 0.1.20으로 갱신한 뒤 프로필 2 바로가기로 앱을 열고, 이미 열린 창을 앞으로 가져오는 동작을 확인했습니다. 로그인 상태에서 Native 앱·브라우저 도구 전체 검증은 남아 있습니다.
+- **macOS Intel:** Rosetta에서 x86_64 패키지의 CLI 실행을 확인했습니다. Intel 실기기에서 공식 ChatGPT 앱을 열고 종료하는 검증은 남아 있습니다.
+- **Windows:** CI의 프로필 수명주기와 실행 설정 검사를 통과했습니다. 공식 ChatGPT 앱 실행은 실기기에서 검증하지 않았습니다.
+- **Linux:** 공식 패키지 탐색, 관리 프로필 설치·제거, Xvfb에서 바로가기 실행을 확인했습니다. 로그인 상태의 전체 검증은 남아 있습니다.
+
+전체 검증 절차는 [PLATFORM_VERIFICATION.md](PLATFORM_VERIFICATION.md)를 참고하세요.
 
 ## 요구 사항
 
