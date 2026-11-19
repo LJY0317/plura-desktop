@@ -6,7 +6,7 @@ The repository was recreated from a fresh public source snapshot on 2026-09-28. 
 
 ## Release gate
 
-Before a GitHub Release is created, the tag workflow runs the full test/package/invariant suite on macOS, Windows, and Linux with Python 3.10 and 3.12. The build job creates and verifies the wheel/source distribution. Separate Apple Silicon and Intel jobs then build one-folder standalone Plura runtimes for `arm64` and `x86_64`, transported as `plura-desktop-macos-ARCH.zip`. Installation keeps the executable and support libraries unpacked, avoiding extraction on every CLI invocation.
+Before a GitHub Release is created, the tag workflow runs the full test/package/invariant suite on macOS, Windows, and Linux with Python 3.10, 3.12, and 3.14. It also tests Python 3.11 and 3.13 on Linux. The build job creates and verifies the wheel/source distribution. Separate Apple Silicon and Intel jobs then build one-folder standalone Plura runtimes for `arm64` and `x86_64`, transported as `plura-desktop-macos-ARCH.zip`. Installation keeps the executable and support libraries unpacked, avoiding extraction on every CLI invocation.
 
 Each standalone build signs its executable and collected binaries through PyInstaller when Developer ID credentials are available. The macOS assembly job computes SHA-256 over the final ZIPs, then renders a bootstrap installer bound to the exact tag, wheel, standalone filenames, and hashes. It builds a DMG containing a universal (`x86_64` + `arm64`) native `Install Plura Desktop.app`, both architecture-specific runtime ZIPs, the wheel fallback, and the rendered checksum-bound installer. The final publish job creates `SHA256SUMS` across every downloadable asset before creating/updating the GitHub Release.
 

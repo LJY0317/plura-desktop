@@ -6,8 +6,9 @@ All notable public changes to Plura Desktop will be documented here from the fir
 
 - Recover macOS installer and profile staging after an interruption. Preserve the previous CLI until the replacement is committed and remove abandoned installer downloads on the next update run.
 - Recognize the default ChatGPT instance opened from Finder. Managed shortcuts bring the existing profile forward and show a launch error when it cannot open.
-
 - Breaking: target contract v2 launches the official Desktop with Native execution owned by the app. Remove the external Codex engine, supervisor, routing/model-list proxies, engine overrides and renderer CDP integration. Profile state and original app remain unchanged; companion integrations must migrate before installation.
+
+## [0.1.19] - 2026-10-29
 
 - Keep guided macOS update/removal ownership stable across reboots by recording the filesystem volume UUID instead of a boot-local device number.
 
