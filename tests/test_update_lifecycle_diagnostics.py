@@ -120,6 +120,28 @@ class FakeProfileUpdateReceipts(unittest.TestCase):
         self.assertNotIn("PRIVATE_OWNED_SOCKET_PATH", json.dumps(records))
 
 
+    def test_target_lookup_and_desktop_identity_failures_record_distinct_phases(self) -> None:
+        failures = (
+            ("_target", OSError(13, "private target path"), "target_lookup"),
+            ("target_session", OSError(3, "private desktop path"), "desktop_identity"),
+        )
+        self.platform.running_pids = [123]
+        for method, error, phase in failures:
+            with self.subTest(phase=phase):
+                with patch(f"plura_desktop.manager.{method}", side_effect=error):
+                    with self.assertRaises(OSError) as raised:
+                        launch_target(self.platform, self.profile.identifier, activate=True)
+                self.assertIs(raised.exception, error)
+                records = _incident_payloads(self.profile.meta)
+                item = next(
+                    record["updateLifecycle"] for record in records
+                    if record["updateLifecycle"]["failedPhase"] == phase
+                )
+                self.assertEqual("launch_target", item["operation"])
+                self.assertEqual(error.errno, item["errno"])
+                self.assertNotIn(error.strerror, json.dumps(item))
+        self.assertEqual(2, len(_incident_payloads(self.profile.meta)))
+
     def test_control_runtime_failure_has_distinct_phase_and_never_leaks_message(self) -> None:
         with patch.object(self.platform, "write_control_cli", side_effect=OSError("private control path")):
             with self.assertRaises(OSError):

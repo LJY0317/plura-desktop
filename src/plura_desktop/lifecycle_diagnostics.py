@@ -1,4 +1,4 @@
-"""Bounded, event-triggered diagnostic receipts for profile update failures.
+"""Bounded, event-triggered diagnostic receipts for profile launch and update failures.
 
 No background recorder, tracebacks, user-supplied strings, conversation data,
 environment, authentication, network requests, process argv, or raw paths.
@@ -37,11 +37,12 @@ _ERROR_TYPES = frozenset((
     "ValueError", "KeyError", "TypeError", "TimeoutError",
     "CalledProcessError", "JSONDecodeError",
 ))
-_OPERATIONS = frozenset(("refresh", "prepare_launch", "launch_desktop"))
+_OPERATIONS = frozenset(("refresh", "prepare_launch", "launch_desktop", "launch_target"))
 _PHASES = frozenset((
     "begin", "update_lock", "manifest_validation", "official_source_validation",
     "managed_process_check", "runtime_prepare", "selector_staging", "control_runtime_prepare",
     "ownership_validation", "manifest_commit", "final_validation", "desktop_spawn", "complete",
+    "target_lookup", "target_state", "desktop_identity", "desktop_activation", "launch_configuration",
 ))
 
 

@@ -11,7 +11,9 @@ from typing import Any
 from .domain import (
     DEFAULT_MANAGED_PROFILE_INDEX,
     MANIFEST_SCHEMA,
+    PROFILE_IDENTIFIER_PREFIX,
     ManagedPath,
+    profile_identifier,
 )
 from .diagnostic_artifacts import validate_profile_diagnostic_tree, validate_runtime_diagnostic_tree
 from .lifecycle_diagnostics import UpdateLifecycleReceipt, latest_update_receipt
@@ -432,14 +434,15 @@ class Profile:
 
     def launch(self) -> None:
         executable = self.prepare_launch()
-        manifest = self.load()
-        rust_log = None
-        if self.tool_lifecycle_diagnostics_enabled(manifest):
-            rust_log = self.platform.tool_lifecycle_diagnostic_rust_log()
-            if rust_log is None:
-                raise RuntimeError(f"Tool-lifecycle diagnostics are unsupported on {self.platform.platform_id}")
         receipt = UpdateLifecycleReceipt(self.platform, self.layout, "launch_desktop")
         try:
+            receipt.stage("launch_configuration")
+            manifest = self.load()
+            rust_log = None
+            if self.tool_lifecycle_diagnostics_enabled(manifest):
+                rust_log = self.platform.tool_lifecycle_diagnostic_rust_log()
+                if rust_log is None:
+                    raise RuntimeError(f"Tool-lifecycle diagnostics are unsupported on {self.platform.platform_id}")
             receipt.stage("desktop_spawn")
             self.platform.launch(self.layout, executable, rust_log=rust_log)
             receipt.complete()
@@ -709,17 +712,38 @@ def target_session(platform: DesktopPlatform, target_id: str) -> dict[str, Any]:
 
 
 def launch_target(platform: DesktopPlatform, target_id: str, *, activate: bool = False) -> dict[str, Any]:
-    target = _target(platform, target_id)
-    if target["state"] == "running":
-        session = target_session(platform, target_id)
-        if activate:
-            pid = session.get("desktopProcessID")
-            if pid is None:
-                raise RuntimeError(f"Exact desktop process identity is unavailable for target: {target_id}")
-            platform.request_desktop_activation(_target_executable(platform, target), pid)
-        return session
-    if target["state"] != "stopped":
-        raise RuntimeError(f"Target state is invalid: {target_id}")
+    phase = "target_lookup"
+    try:
+        target = _target(platform, target_id)
+        phase = "target_state"
+        if target["state"] == "running":
+            phase = "desktop_identity"
+            session = target_session(platform, target_id)
+            if activate:
+                pid = session.get("desktopProcessID")
+                if pid is None:
+                    raise RuntimeError(f"Exact desktop process identity is unavailable for target: {target_id}")
+                executable = _target_executable(platform, target)
+                phase = "desktop_activation"
+                platform.request_desktop_activation(executable, pid)
+            return session
+        if target["state"] != "stopped":
+            raise RuntimeError(f"Target state is invalid: {target_id}")
+    except Exception as error:
+        # Preparation and spawning already record their own phases. Here the
+        # launcher can fail before reaching either of those diagnostic scopes.
+        suffix = target_id.removeprefix(PROFILE_IDENTIFIER_PREFIX)
+        if suffix != target_id and len(suffix) <= 2 and suffix.isascii() and suffix.isdecimal():
+            try:
+                index = int(suffix)
+                if profile_identifier(index) == target_id:
+                    receipt = UpdateLifecycleReceipt(platform, platform.layout(index), "launch_target")
+                    receipt.stage(phase)
+                    receipt.failure(error)
+            except Exception:
+                # Failure to collect diagnostics must preserve the launch error.
+                pass
+        raise
     if target_id == "default":
         platform.launch_default(platform.resolve_executable())
     else:

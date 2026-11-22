@@ -63,7 +63,7 @@ plura-desktop diagnostics-status --profile 2
 `official_source_validation`, `runtime_prepare`,
 `selector_staging`, `control_runtime_prepare`,
 `manifest_commit`, `desktop_spawn` 등으로 제한합니다. 앱 실행 요청 실패는
-`launch_desktop`으로 구분합니다. 별도 엔진·중계·supervisor 진단 경로는 제거했습니다.
+`launch_desktop`으로 구분합니다. 준비 전에 실패하면 `launch_target`으로 기록하며 프로필 조회·상태 판정·실행 중인 앱 확인·앱 활성화 단계를 구분합니다.
 LaunchServices는 대기용 `open(1)` PID와 실제 GUI PID가
 다르므로, 원본 앱을 정상 종료할 때에는 **확인된 GUI PID와
 실행 파일의 정규 경로가 모두 일치할 때만** AppKit에 정상 종료를
